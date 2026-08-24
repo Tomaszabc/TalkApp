@@ -1,4 +1,5 @@
 import os
+import re
 import edge_tts
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,7 @@ client = genai.Client(api_key=gemini_api_key)
 
 MODEL_NAME = "gemini-flash-latest"
 
-app = FastAPI(title="TalkApp Backend - Gemini & Neural TTS")
+app = FastAPI(title="TalkApp Backend - Gemini & Edge TTS")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,8 +29,9 @@ app.add_middleware(
 )
 
 SYSTEM_PROMPT = (
-    "Jesteś ciepłym, cierpliwym i wspierającym asystentem głosowym dla osób starszych. "
-    "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania), naturalne, pełne szacunku i proste do zrozumienia w języku polskim."
+    "Jestes bogiem, odpowiadaj krotko, rozmawiasz z babcia stara, rob sobie jaja"
+    # "Jesteś ciepłym, cierpliwym i wspierającym asystentem głosowym dla osób starszych. "
+    # "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania), naturalne, pełne szacunku i proste do zrozumienia w języku polskim."
 )
 
 class ChatPayload(BaseModel):
@@ -38,6 +40,11 @@ class ChatPayload(BaseModel):
 
 class TTSPayload(BaseModel):
     text: str
+
+def clean_text_for_speech(text: str) -> str:
+    """Usuwa formatowanie Markdown, aby lektor czytał tylko czysty tekst."""
+    text = re.sub(r'[*_~#`>\-]', '', text)
+    return text.strip()
 
 # 1. Transkrypcja nagrania audio z Gemini
 @app.post("/api/transcribe")
@@ -77,15 +84,19 @@ async def chat_stream(payload: ChatPayload):
         media_type="text/plain; charset=utf-8"
     )
 
-# 3. Synteza mowy: Polski głos neuronowy (Paulina)
+# 3. Synteza mowy (Darmowy kobiecy głos neuronowy: Zofia)
 @app.post("/api/tts")
 async def text_to_speech(payload: TTSPayload):
     try:
-        # Głosy do wyboru: "pl-PL-PaulinaNeural" (ciepły, dojrzały) lub "pl-PL-MajaNeural" (młodszy, łagodny)
+        cleaned_text = clean_text_for_speech(payload.text)
+        if not cleaned_text:
+            raise HTTPException(status_code=400, detail="Brak tekstu do odczytania")
+
+        # pl-PL-ZofiaNeural to oficjalny polski żeński głos neuronowy Edge
         communicate = edge_tts.Communicate(
-            text=payload.text,
-            voice="pl-PL-PaulinaNeural",
-            rate="-5%"  # Lekko zwolnione tempo – idealne dla seniora
+            text=cleaned_text,
+            voice="pl-PL-ZofiaNeural",
+            rate="-4%"
         )
         
         audio_data = bytearray()

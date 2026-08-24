@@ -13,12 +13,12 @@ export default function App() {
   const audioChunksRef = useRef<Blob[]>([]);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Odtwarzanie głosu neuronowego z Google Cloud TTS
-  const playCloudTTS = async (text: string) => {
+  // Funkcja pobierająca i odtwarzająca wygenerowany głos (Edge TTS) z backendu
+  const playBackendTTS = async (text: string) => {
     if (!text.trim()) return;
     try {
       setIsSpeaking(true);
-      setStatus('Generuję głos asystenta...');
+      setStatus('Odtwarzam głos...');
 
       if (currentAudioRef.current) {
         currentAudioRef.current.pause();
@@ -30,7 +30,7 @@ export default function App() {
         body: JSON.stringify({ text }),
       });
 
-      if (!response.ok) throw new Error('Błąd pobierania audio z Google TTS');
+      if (!response.ok) throw new Error('Błąd pobierania audio z serwera');
 
       const audioBlob = await response.blob();
       const audioUrl = URL.createObjectURL(audioBlob);
@@ -43,14 +43,15 @@ export default function App() {
         URL.revokeObjectURL(audioUrl);
       };
 
-      audio.onerror = () => {
+      audio.onerror = (e) => {
+        console.error('Błąd wbudowanego odtwarzacza Audio:', e);
         setIsSpeaking(false);
-        setStatus('Błąd odtwarzacza');
+        setStatus('Błąd odtwarzania - sprawdź głośność');
       };
 
       await audio.play();
     } catch (err) {
-      console.error('Błąd TTS:', err);
+      console.error('Błąd pobierania TTS:', err);
       setIsSpeaking(false);
       setStatus('Nie udało się odtworzyć głosu');
     }
@@ -152,8 +153,9 @@ export default function App() {
         setAssistantText((prev) => prev + chunk);
       }
 
-      // Po wygenerowaniu pełnego tekstu odtwarzamy głos neuronowy
-      await playCloudTTS(fullText);
+      // Po wygenerowaniu całego tekstu, uruchom syntezę mowy na serwerze i odtwórz
+      await playBackendTTS(fullText);
+      
     } catch (err: any) {
       console.error(err);
       setAssistantText(`Wystąpił problem: ${err.message}`);
@@ -177,7 +179,7 @@ export default function App() {
           <h1 className="text-2xl font-bold">TalkApp</h1>
         </div>
         <span className="text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 font-semibold tracking-wide uppercase">
-          Google Neural Voice
+          Neural Voice Zofia
         </span>
       </header>
 
