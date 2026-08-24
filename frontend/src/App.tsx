@@ -11,24 +11,58 @@ export default function App() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Odtwarzanie głosu przez syntezator
-  const speakText = (text: string) => {
-    if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
+  // Odtwarzanie głosu neuronowego z Google Cloud TTS
+  const playCloudTTS = async (text: string) => {
+    if (!text.trim()) return;
+    try {
+      setIsSpeaking(true);
+      setStatus('Generuję głos asystenta...');
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'pl-PL';
-    utterance.rate = 0.9;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+      }
 
-    window.speechSynthesis.speak(utterance);
+      const response = await fetch('http://127.0.0.1:8000/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!response.ok) throw new Error('Błąd pobierania audio z Google TTS');
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+
+      audio.onended = () => {
+        setIsSpeaking(false);
+        setStatus('Dotknij mikrofonu, aby odpowiedzieć');
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        setStatus('Błąd odtwarzacza');
+      };
+
+      await audio.play();
+    } catch (err) {
+      console.error('Błąd TTS:', err);
+      setIsSpeaking(false);
+      setStatus('Nie udało się odtworzyć głosu');
+    }
   };
 
-  // Rozpoczęcie nagrywania dźwięku z mikrofonu
   const startRecording = async () => {
     try {
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        setIsSpeaking(false);
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
       
@@ -42,34 +76,30 @@ export default function App() {
       };
 
       mediaRecorder.onstop = async () => {
-        // Zatrzymanie strumienia mikrofonu
         stream.getTracks().forEach((track) => track.stop());
-        
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        await sendAudioToWhisper(audioBlob);
+        await sendAudioToBackend(audioBlob);
       };
 
       mediaRecorder.start();
       setIsRecording(true);
       setStatus('Słucham... Naciśnij kwadrat, aby zakończyć');
     } catch (err) {
-      console.error('Błąd dostępu do mikrofonu:', err);
-      setStatus('Błąd: Brak uprawnień do mikrofonu');
+      console.error('Błąd mikrofonu:', err);
+      setStatus('Brak dostępu do mikrofonu');
     }
   };
 
-  // Zatrzymanie nagrywania i wysyłka
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
       setIsLoading(true);
-      setStatus('Przetwarzam głos przez OpenAI Whisper...');
+      setStatus('Rozpoznaję mowę...');
     }
   };
 
-  // Wysłanie pliku audio do backendu
-  const sendAudioToWhisper = async (audioBlob: Blob) => {
+  const sendAudioToBackend = async (audioBlob: Blob) => {
     try {
       const formData = new FormData();
       formData.append('file', audioBlob, 'recording.webm');
@@ -79,10 +109,8 @@ export default function App() {
         body: formData,
       });
 
-      if (!response.ok) throw new Error('Błąd transkrypcji audio');
-      
+      if (!response.ok) throw new Error('Błąd transkrypcji');
       const data = await response.json();
-      console.log('Rozpoznano przez Whisper:', data.text);
 
       if (data.text.trim()) {
         await handleStreamResponse(data.text);
@@ -97,11 +125,10 @@ export default function App() {
     }
   };
 
-  // Strumieniowanie odpowiedzi GPT-4o
   const handleStreamResponse = async (userPrompt: string) => {
     try {
       setIsLoading(false);
-      setStatus('Odpowiadam...');
+      setStatus('Generuję odpowiedź...');
       setAssistantText('');
 
       const response = await fetch('http://127.0.0.1:8000/api/chat/stream', {
@@ -125,8 +152,8 @@ export default function App() {
         setAssistantText((prev) => prev + chunk);
       }
 
-      setStatus('Dotknij mikrofonu, aby odpowiedzieć');
-      speakText(fullText);
+      // Po wygenerowaniu pełnego tekstu odtwarzamy głos neuronowy
+      await playCloudTTS(fullText);
     } catch (err: any) {
       console.error(err);
       setAssistantText(`Wystąpił problem: ${err.message}`);
@@ -150,11 +177,10 @@ export default function App() {
           <h1 className="text-2xl font-bold">TalkApp</h1>
         </div>
         <span className="text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full border border-emerald-500/20 font-semibold tracking-wide uppercase">
-          OpenAI Powered
+          Google Neural Voice
         </span>
       </header>
 
-      {/* Okno odpowiedzi asystenta */}
       <section className="w-full max-w-lg my-auto py-6">
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl">
           <div className="flex items-center gap-2 mb-3 text-slate-400 text-sm font-medium">
@@ -167,14 +193,13 @@ export default function App() {
         </div>
       </section>
 
-      {/* Przyciski i kontrolki */}
       <footer className="w-full max-w-lg flex flex-col items-center pb-6 gap-4">
         <form onSubmit={handleFormSubmit} className="w-full flex gap-2">
           <input
             type="text"
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
-            placeholder="Możesz też wpisać tekst..."
+            placeholder="Wpisz wiadomość..."
             disabled={isLoading || isRecording}
             className="flex-1 bg-slate-900 border border-slate-800 rounded-full px-5 py-3 text-sm focus:outline-none focus:border-emerald-500 text-white disabled:opacity-50"
           />

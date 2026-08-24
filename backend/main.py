@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import edge_tts
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -10,12 +11,13 @@ from google.genai import types
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Inicjalizacja Gemini
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=gemini_api_key)
 
-# Nazwa modelu Gemini
-MODEL_NAME = "gemini-3.6-flash"
+MODEL_NAME = "gemini-flash-latest"
 
-app = FastAPI(title="TalkApp Backend - Gemini")
+app = FastAPI(title="TalkApp Backend - Gemini & Neural TTS")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,51 +36,39 @@ class ChatPayload(BaseModel):
     user_id: str
     message: str
 
-# 1. Transkrypcja nagrania audio
+class TTSPayload(BaseModel):
+    text: str
+
+# 1. Transkrypcja nagrania audio z Gemini
 @app.post("/api/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     try:
-        print("\n[KROK 1] Otrzymano plik audio z przeglądarki...")
         audio_bytes = await file.read()
-        print(f"[KROK 2] Rozmiar pliku: {len(audio_bytes)} bajtów. Przesyłam do Gemini...")
-
         response = await client.aio.models.generate_content(
             model=MODEL_NAME,
             contents=[
-                types.Part.from_bytes(
-                    data=audio_bytes,
-                    mime_type="audio/webm"
-                ),
-                "Przepisz dosłownie treść tego nagrania na język polski. Zwróć wyłącznie sam rozpoznany tekst, bez żadnych dodatkowych uwag."
+                types.Part.from_bytes(data=audio_bytes, mime_type="audio/webm"),
+                "Przepisz dosłownie treść tego nagrania na tekst w języku polskim. Zwróć wyłącznie sam rozpoznany tekst, bez żadnych dodatkowych uwag."
             ]
         )
-        
-        transcribed_text = response.text.strip() if response.text else ""
-        print(f"[KROK 3] Sukces! Rozpoznany tekst: \"{transcribed_text}\"")
-        return {"text": transcribed_text}
-
+        return {"text": response.text.strip() if response.text else ""}
     except Exception as e:
         print(f"[BŁĄD TRANSKRYPCJI]: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2. Generator strumienia odpowiedzi
+# 2. Generator odpowiedzi tekstowej Gemini
 async def gemini_stream_generator(user_prompt: str):
-    print(f"[KROK 4] Generuję odpowiedź dla pytania: \"{user_prompt}\"...")
     try:
         response = await client.aio.models.generate_content_stream(
             model=MODEL_NAME,
             contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT
-            )
+            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
         )
         async for chunk in response:
             if chunk.text:
                 yield chunk.text
-        print("[KROK 5] Zakończono generowanie odpowiedzi.")
     except Exception as e:
-        print(f"[BŁĄD GENEROWANIA]: {e}")
-        yield f"Błąd serwera: {str(e)}"
+        yield f"Błąd: {str(e)}"
 
 @app.post("/api/chat/stream")
 async def chat_stream(payload: ChatPayload):
@@ -86,6 +76,28 @@ async def chat_stream(payload: ChatPayload):
         gemini_stream_generator(payload.message),
         media_type="text/plain; charset=utf-8"
     )
+
+# 3. Synteza mowy: Polski głos neuronowy (Paulina)
+@app.post("/api/tts")
+async def text_to_speech(payload: TTSPayload):
+    try:
+        # Głosy do wyboru: "pl-PL-PaulinaNeural" (ciepły, dojrzały) lub "pl-PL-MajaNeural" (młodszy, łagodny)
+        communicate = edge_tts.Communicate(
+            text=payload.text,
+            voice="pl-PL-PaulinaNeural",
+            rate="-5%"  # Lekko zwolnione tempo – idealne dla seniora
+        )
+        
+        audio_data = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data.extend(chunk["data"])
+
+        return Response(content=bytes(audio_data), media_type="audio/mpeg")
+
+    except Exception as e:
+        print(f"[BŁĄD TTS]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
