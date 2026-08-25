@@ -95,7 +95,7 @@ async def text_to_speech(payload: TTSPayload):
         # pl-PL-ZofiaNeural to oficjalny polski żeński głos neuronowy Edge
         communicate = edge_tts.Communicate(
             text=cleaned_text,
-            voice="pl-PL-ZofiaNeural",
+            voice="pl-PL-MarekNeural",
             rate="-4%"
         )
         
