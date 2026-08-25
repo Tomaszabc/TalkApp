@@ -17,7 +17,6 @@ export default function App() {
     isHandsFreeRef.current = isHandsFree;
   }, [isHandsFree]);
 
-  // Referencje
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -25,10 +24,12 @@ export default function App() {
   const micAnimationFrameRef = useRef<number | null>(null);
   const silenceStartRef = useRef<number | null>(null);
 
-  // Awatar 3D (wyłącznie wizualny)
+  // Instancja awatara 3D
   const avatarContainerRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<any>(null);
+  const mouthAnimFrameRef = useRef<number | null>(null);
 
+  // Inicjalizacja TalkingHead
   useEffect(() => {
     let isMounted = true;
 
@@ -40,7 +41,7 @@ export default function App() {
 
         const head = new TalkingHead(avatarContainerRef.current, {
           cameraView: 'head',
-          cameraDistance: 0.6,
+          cameraDistance: 0.65,
           cameraX: 0,
           cameraY: 0.4,
           avatarMood: 'neutral',
@@ -52,9 +53,12 @@ export default function App() {
           avatarMood: 'neutral',
         });
 
-        if (isMounted) headRef.current = head;
+        if (isMounted) {
+          headRef.current = head;
+          setStatus('Gotowy do rozmowy');
+        }
       } catch (err) {
-        console.warn('Podgląd 3D niedostępny (dźwięk działa normalnie):', err);
+        console.warn('Podgląd 3D niedostępny:', err);
       }
     }
 
@@ -66,8 +70,60 @@ export default function App() {
         headRef.current.stop();
         headRef.current = null;
       }
+      if (mouthAnimFrameRef.current) cancelAnimationFrame(mouthAnimFrameRef.current);
     };
   }, []);
+
+  // Automatyczny ruch ust w trakcie odtwarzania głosu
+  useEffect(() => {
+    if (!isSpeaking) {
+      // Wyzerowanie ust po zakończeniu mówienia
+      setMouthMorphs(0, 0);
+      if (mouthAnimFrameRef.current) cancelAnimationFrame(mouthAnimFrameRef.current);
+      return;
+    }
+
+    const animateMouth = () => {
+      const time = performance.now() / 1000;
+
+      // Naturalny rytm ludzkich sylab (kombinacja fal harmonicznych 9Hz i 4Hz)
+      const jawMovement = Math.max(0, Math.sin(time * 9.5) * 0.5 + Math.sin(time * 4.2) * 0.3 + 0.2);
+      const vowelMovement = Math.max(0, Math.cos(time * 7.0) * 0.4);
+
+      setMouthMorphs(jawMovement, vowelMovement);
+
+      mouthAnimFrameRef.current = requestAnimationFrame(animateMouth);
+    };
+
+    mouthAnimFrameRef.current = requestAnimationFrame(animateMouth);
+
+    return () => {
+      if (mouthAnimFrameRef.current) cancelAnimationFrame(mouthAnimFrameRef.current);
+    };
+  }, [isSpeaking]);
+
+  // Aplikacja wyłącznie właściwych celów morphingowych (bez blokad mouthClose)
+  const setMouthMorphs = (jawVal: number, vowelVal: number) => {
+    if (!headRef.current) return;
+    const rootScene = headRef.current.scene || headRef.current.avatar?.scene || headRef.current.avatar?.model;
+    if (!rootScene) return;
+
+    rootScene.traverse((child: any) => {
+      if (child.isMesh && child.morphTargetDictionary && child.morphTargetInfluences) {
+        const dict = child.morphTargetDictionary;
+        const influences = child.morphTargetInfluences;
+
+        // Ruch żuchwy i otwarcie ust
+        if (dict['jawOpen'] !== undefined) influences[dict['jawOpen']] = jawVal * 0.8;
+        if (dict['mouthOpen'] !== undefined) influences[dict['mouthOpen']] = jawVal * 0.6;
+        if (dict['viseme_aa'] !== undefined) influences[dict['viseme_aa']] = jawVal * 0.7;
+
+        // Ruchy samogłosek
+        if (dict['viseme_O'] !== undefined) influences[dict['viseme_O']] = vowelVal * 0.6;
+        if (dict['viseme_E'] !== undefined) influences[dict['viseme_E']] = vowelVal * 0.4;
+      }
+    });
+  };
 
   const cleanupMicContext = () => {
     if (micAnimationFrameRef.current) cancelAnimationFrame(micAnimationFrameRef.current);
@@ -78,7 +134,6 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // Obsługa zakończenia mowy
   const handleAudioEnded = () => {
     setIsSpeaking(false);
     if (isHandsFreeRef.current) {
@@ -91,7 +146,6 @@ export default function App() {
     }
   };
 
-  // Niezawodne pobieranie i odtwarzanie dźwięku
   const playBackendTTS = async (text: string) => {
     if (!text.trim()) return;
     try {
@@ -114,10 +168,10 @@ export default function App() {
           try {
             audioPlayerRef.current.currentTime = 0;
             await audioPlayerRef.current.play();
-            setStatus('Marek odpowiada...');
+            setIsSpeaking(true);
+            setStatus('Marek mówi...');
           } catch (playErr) {
             console.warn('Autoodtwarzanie zablokowane:', playErr);
-            setStatus('Kliknij Play, aby odsłuchać');
           }
         }
       }, 50);
@@ -302,7 +356,7 @@ export default function App() {
       <section className="w-full max-w-lg my-auto py-4">
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
           
-          {/* Wizualny kontener 3D */}
+          {/* Kontener awatara 3D */}
           <div className="w-full h-80 bg-slate-950 rounded-2xl overflow-hidden relative border border-slate-800/60 shadow-inner">
             <div ref={avatarContainerRef} className="w-full h-full" />
           </div>
@@ -316,7 +370,7 @@ export default function App() {
             {assistantText}
           </p>
 
-          {/* Dedykowany, natywny odtwarzacz audio */}
+          {/* Odtwarzacz audio */}
           {audioUrl && (
             <audio
               ref={audioPlayerRef}
