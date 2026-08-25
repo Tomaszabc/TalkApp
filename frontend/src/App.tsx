@@ -6,69 +6,59 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [assistantText, setAssistantText] = useState('Dzień dobry! Kliknij mikrofon lub włącz tryb ciągły, aby porozmawiać.');
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [status, setStatus] = useState('Inicjalizacja awatara...');
+  const [status, setStatus] = useState('Gotowy do rozmowy');
   const [textInput, setTextInput] = useState('');
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
+  // Tryb ciągły (Hands-Free)
   const [isHandsFree, setIsHandsFree] = useState(false);
   const isHandsFreeRef = useRef(isHandsFree);
   useEffect(() => {
     isHandsFreeRef.current = isHandsFree;
   }, [isHandsFree]);
 
+  // Referencje
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const micAudioContextRef = useRef<AudioContext | null>(null);
   const micAnimationFrameRef = useRef<number | null>(null);
   const silenceStartRef = useRef<number | null>(null);
 
+  // Awatar 3D (wyłącznie wizualny)
   const avatarContainerRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<any>(null);
 
-  // --- ODBLOKOWANIE DŹWIĘKU PRZEGLĄDARKI ---
-  const unlockAudioContext = () => {
-    if (headRef.current && headRef.current.audioCtx && headRef.current.audioCtx.state === 'suspended') {
-      headRef.current.audioCtx.resume().catch(() => {});
-    }
-  };
-
-  // --- ŁADOWANIE TALKINGHEAD Z OMINIĘCIEM VITE ---
   useEffect(() => {
     let isMounted = true;
 
-    async function initTalkingHead() {
+    async function initAvatar() {
       if (!avatarContainerRef.current || headRef.current) return;
-
       try {
         const module = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/modules/talkinghead.mjs');
         const TalkingHead = module.TalkingHead;
 
         const head = new TalkingHead(avatarContainerRef.current, {
-          cameraView: 'head',      // Automatycznie centruje kadr na twarzy
-          cameraDistance: 0.6,    // Dystans kamery (zbliżenie na głowę)
+          cameraView: 'head',
+          cameraDistance: 0.6,
           cameraX: 0,
           cameraY: 0.4,
           avatarMood: 'neutral',
-          lipsyncModules: ["en", "fi"]
         });
 
         await head.showAvatar({
           url: '/model.glb',
           body: 'F',
           avatarMood: 'neutral',
-          lipsyncLang: 'fi' // Usta zoptymalizowane pod polską wymowę!
         });
 
-        if (isMounted) {
-          headRef.current = head;
-          setStatus('Gotowy do rozmowy');
-        }
-      } catch (err: any) {
-        console.error('Błąd inicjalizacji TalkingHead:', err);
-        if (isMounted) setStatus('Błąd ładowania awatara 3D');
+        if (isMounted) headRef.current = head;
+      } catch (err) {
+        console.warn('Podgląd 3D niedostępny (dźwięk działa normalnie):', err);
       }
     }
 
-    initTalkingHead();
+    initAvatar();
 
     return () => {
       isMounted = false;
@@ -88,12 +78,24 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // --- ODTWARZANIE DŹWIĘKU I LIP-SYNC (KULOODPORNE PODEJŚCIE) ---
+  // Obsługa zakończenia mowy
+  const handleAudioEnded = () => {
+    setIsSpeaking(false);
+    if (isHandsFreeRef.current) {
+      setStatus('Słucham Cię ponownie...');
+      setTimeout(() => {
+        if (isHandsFreeRef.current) startRecording();
+      }, 400);
+    } else {
+      setStatus('Dotknij mikrofonu, aby odpowiedzieć');
+    }
+  };
+
+  // Niezawodne pobieranie i odtwarzanie dźwięku
   const playBackendTTS = async (text: string) => {
     if (!text.trim()) return;
     try {
-      setStatus('Marek odpowiada...');
-      setIsSpeaking(true);
+      setStatus('Marek przygotowuje odpowiedź...');
 
       const response = await fetch('http://127.0.0.1:8000/api/tts', {
         method: 'POST',
@@ -103,40 +105,22 @@ export default function App() {
 
       if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
 
-      // 1. Zamiast surowych bajtów, pobieramy plik (Blob) - tak jak przy pobieraniu pliku ze strony
       const audioBlob = await response.blob();
-      const url = URL.createObjectURL(audioBlob);
+      const newUrl = URL.createObjectURL(audioBlob);
+      setAudioUrl(newUrl);
 
-      if (headRef.current) {
-        // 2. Tworzymy niezawodny, natywny odtwarzacz w locie (nie wymaga renderowania w HTML!)
-        const audio = new Audio(url);
-        audio.crossOrigin = "anonymous";
-
-        try {
-          // 3. Przekazujemy odtwarzacz do TalkingHead. Biblioteka automatycznie wciska "Play"
-          // i słucha własnego dźwięku, synchronicznie ruszając ustami!
-          await headRef.current.speakAudio(audio, { text: text });
-          
-          // 4. Po skończeniu mówienia:
-          setIsSpeaking(false);
-          URL.revokeObjectURL(url); // Czyścimy pamięć
-
-          if (isHandsFreeRef.current) {
-            setStatus('Słucham Cię ponownie...');
-            setTimeout(() => {
-              if (isHandsFreeRef.current) startRecording();
-            }, 400);
-          } else {
-            setStatus('Dotknij mikrofonu, aby odpowiedzieć');
+      setTimeout(async () => {
+        if (audioPlayerRef.current) {
+          try {
+            audioPlayerRef.current.currentTime = 0;
+            await audioPlayerRef.current.play();
+            setStatus('Marek odpowiada...');
+          } catch (playErr) {
+            console.warn('Autoodtwarzanie zablokowane:', playErr);
+            setStatus('Kliknij Play, aby odsłuchać');
           }
-
-        } catch (e) {
-          console.error("Błąd podczas animacji/audio:", e);
-          setIsSpeaking(false);
         }
-      } else {
-        setIsSpeaking(false);
-      }
+      }, 50);
     } catch (err: any) {
       console.error('Błąd TTS:', err);
       setIsSpeaking(false);
@@ -145,9 +129,8 @@ export default function App() {
   };
 
   const startRecording = async () => {
-    unlockAudioContext();
     try {
-      if (headRef.current) headRef.current.stopSpeaking();
+      if (audioPlayerRef.current) audioPlayerRef.current.pause();
       setIsSpeaking(false);
       cleanupMicContext();
 
@@ -217,7 +200,6 @@ export default function App() {
   };
 
   const stopRecording = () => {
-    unlockAudioContext();
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       cleanupMicContext();
@@ -288,7 +270,6 @@ export default function App() {
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    unlockAudioContext();
     if (!textInput.trim() || isLoading) return;
     const msg = textInput;
     setTextInput('');
@@ -304,7 +285,6 @@ export default function App() {
         </div>
         <button
           onClick={() => {
-            unlockAudioContext();
             const nextState = !isHandsFree;
             setIsHandsFree(nextState);
             if (nextState && !isRecording && !isSpeaking && !isLoading) startRecording();
@@ -322,11 +302,10 @@ export default function App() {
       <section className="w-full max-w-lg my-auto py-4">
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
           
-          {/* ================= KONTENER TALKINGHEAD 3D ================= */}
+          {/* Wizualny kontener 3D */}
           <div className="w-full h-80 bg-slate-950 rounded-2xl overflow-hidden relative border border-slate-800/60 shadow-inner">
             <div ref={avatarContainerRef} className="w-full h-full" />
           </div>
-          {/* ========================================================== */}
 
           <div className="flex items-center justify-center gap-2 text-slate-400 text-sm font-medium pt-2 border-t border-slate-800/80">
             <Volume2 className={`w-5 h-5 ${isSpeaking ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`} />
@@ -336,6 +315,22 @@ export default function App() {
           <p className="text-lg leading-relaxed text-slate-100 min-h-[60px] text-center italic">
             {assistantText}
           </p>
+
+          {/* Dedykowany, natywny odtwarzacz audio */}
+          {audioUrl && (
+            <audio
+              ref={audioPlayerRef}
+              src={audioUrl}
+              crossOrigin="anonymous"
+              className="hidden"
+              onPlay={() => setIsSpeaking(true)}
+              onEnded={handleAudioEnded}
+              onError={() => {
+                setIsSpeaking(false);
+                setStatus('Błąd odtwarzacza audio');
+              }}
+            />
+          )}
         </div>
       </section>
 

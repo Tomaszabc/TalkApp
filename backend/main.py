@@ -29,9 +29,10 @@ app.add_middleware(
 )
 
 SYSTEM_PROMPT = (
-    "Jestes bogiem, odpowiadaj krotko, rozmawiasz z babcia stara, rob sobie jaja"
-    # "Jesteś ciepłym, cierpliwym i wspierającym asystentem głosowym dla osób starszych. "
-    # "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania), naturalne, pełne szacunku i proste do zrozumienia w języku polskim."
+    
+    "Jesteś ciepłym, cierpliwym i wspierającym asystentem głosowym dla osób starszych. "
+    "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania), naturalne, pełne szacunku i proste do zrozumienia w języku polskim."
+
 )
 
 class ChatPayload(BaseModel):
