@@ -24,6 +24,13 @@ export default function App() {
   const avatarContainerRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<any>(null);
 
+  // --- ODBLOKOWANIE DŹWIĘKU PRZEGLĄDARKI ---
+  const unlockAudioContext = () => {
+    if (headRef.current && headRef.current.audioCtx && headRef.current.audioCtx.state === 'suspended') {
+      headRef.current.audioCtx.resume().catch(() => {});
+    }
+  };
+
   // --- ŁADOWANIE TALKINGHEAD Z OMINIĘCIEM VITE ---
   useEffect(() => {
     let isMounted = true;
@@ -36,10 +43,10 @@ export default function App() {
         const TalkingHead = module.TalkingHead;
 
         const head = new TalkingHead(avatarContainerRef.current, {
-          cameraView: 'upper',
-          cameraDistance: 0.8,
+          cameraView: 'head',      // Automatycznie centruje kadr na twarzy
+          cameraDistance: 0.6,    // Dystans kamery (zbliżenie na głowę)
           cameraX: 0,
-          cameraY: 1.45,
+          cameraY: 0.4,
           avatarMood: 'neutral',
           lipsyncModules: ["en", "fi"]
         });
@@ -48,6 +55,7 @@ export default function App() {
           url: '/model.glb',
           body: 'F',
           avatarMood: 'neutral',
+          lipsyncLang: 'fi' // Usta zoptymalizowane pod polską wymowę!
         });
 
         if (isMounted) {
@@ -56,9 +64,7 @@ export default function App() {
         }
       } catch (err: any) {
         console.error('Błąd inicjalizacji TalkingHead:', err);
-        if (isMounted) {
-          setStatus('Błąd ładowania awatara 3D');
-        }
+        if (isMounted) setStatus('Błąd ładowania awatara 3D');
       }
     }
 
@@ -82,7 +88,7 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // --- ODTWARZANIE DŹWIĘKU I LIP-SYNC ---
+  // --- ODTWARZANIE DŹWIĘKU I LIP-SYNC (KULOODPORNE PODEJŚCIE) ---
   const playBackendTTS = async (text: string) => {
     if (!text.trim()) return;
     try {
@@ -97,20 +103,24 @@ export default function App() {
 
       if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
 
-      const arrayBuffer = await response.arrayBuffer();
+      // 1. Zamiast surowych bajtów, pobieramy plik (Blob) - tak jak przy pobieraniu pliku ze strony
+      const audioBlob = await response.blob();
+      const url = URL.createObjectURL(audioBlob);
 
       if (headRef.current) {
-        // Obudź kontekst audio przeglądarki, co jest wymagane do odtworzenia dźwięku
-        if (headRef.current.audioCtx.state === 'suspended') {
-          await headRef.current.audioCtx.resume();
-        }
+        // 2. Tworzymy niezawodny, natywny odtwarzacz w locie (nie wymaga renderowania w HTML!)
+        const audio = new Audio(url);
+        audio.crossOrigin = "anonymous";
 
-        // Dekoduj dane audio do formatu AudioBuffer, z którym potrafi pracować Web Audio API
-        const audioBuffer = await headRef.current.audioCtx.decodeAudioData(arrayBuffer);
-
-        // Użyj speakAudio zamiast speakText, przekazując zdekodowany dźwięk oraz tekst dla synchronizacji ust
-        headRef.current.speakAudio(audioBuffer, { text: text }, () => {
+        try {
+          // 3. Przekazujemy odtwarzacz do TalkingHead. Biblioteka automatycznie wciska "Play"
+          // i słucha własnego dźwięku, synchronicznie ruszając ustami!
+          await headRef.current.speakAudio(audio, { text: text });
+          
+          // 4. Po skończeniu mówienia:
           setIsSpeaking(false);
+          URL.revokeObjectURL(url); // Czyścimy pamięć
+
           if (isHandsFreeRef.current) {
             setStatus('Słucham Cię ponownie...');
             setTimeout(() => {
@@ -119,7 +129,11 @@ export default function App() {
           } else {
             setStatus('Dotknij mikrofonu, aby odpowiedzieć');
           }
-        });
+
+        } catch (e) {
+          console.error("Błąd podczas animacji/audio:", e);
+          setIsSpeaking(false);
+        }
       } else {
         setIsSpeaking(false);
       }
@@ -131,6 +145,7 @@ export default function App() {
   };
 
   const startRecording = async () => {
+    unlockAudioContext();
     try {
       if (headRef.current) headRef.current.stopSpeaking();
       setIsSpeaking(false);
@@ -202,6 +217,7 @@ export default function App() {
   };
 
   const stopRecording = () => {
+    unlockAudioContext();
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       cleanupMicContext();
@@ -272,6 +288,7 @@ export default function App() {
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    unlockAudioContext();
     if (!textInput.trim() || isLoading) return;
     const msg = textInput;
     setTextInput('');
@@ -287,6 +304,7 @@ export default function App() {
         </div>
         <button
           onClick={() => {
+            unlockAudioContext();
             const nextState = !isHandsFree;
             setIsHandsFree(nextState);
             if (nextState && !isRecording && !isSpeaking && !isLoading) startRecording();
@@ -318,7 +336,6 @@ export default function App() {
           <p className="text-lg leading-relaxed text-slate-100 min-h-[60px] text-center italic">
             {assistantText}
           </p>
-          
         </div>
       </section>
 
