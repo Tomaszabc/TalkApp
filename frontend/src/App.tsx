@@ -6,9 +6,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [assistantText, setAssistantText] = useState('Dzień dobry! Kliknij mikrofon lub włącz tryb ciągły, aby porozmawiać.');
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [status, setStatus] = useState('Gotowy do rozmowy');
+  const [status, setStatus] = useState('Inicjalizacja awatara...');
   const [textInput, setTextInput] = useState('');
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
   // Tryb ciągły (Hands-Free)
   const [isHandsFree, setIsHandsFree] = useState(false);
@@ -17,19 +16,26 @@ export default function App() {
     isHandsFreeRef.current = isHandsFree;
   }, [isHandsFree]);
 
-  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const micAudioContextRef = useRef<AudioContext | null>(null);
   const micAnimationFrameRef = useRef<number | null>(null);
   const silenceStartRef = useRef<number | null>(null);
 
-  // Instancja awatara 3D
+  // Instancja TalkingHead
   const avatarContainerRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<any>(null);
-  const mouthAnimFrameRef = useRef<number | null>(null);
 
-  // Inicjalizacja TalkingHead
+  // Natychmiastowe odblokowanie kontekstu audio (w trakcie kliknięcia użytkownika)
+  const unlockAudioContext = () => {
+    if (headRef.current?.audioCtx) {
+      if (headRef.current.audioCtx.state === 'suspended') {
+        headRef.current.audioCtx.resume().catch((err: any) => console.warn('Błąd odblokowania AudioContext:', err));
+      }
+    }
+  };
+
+  // Inicjalizacja TalkingHead z modelem julia.glb (kidschat)
   useEffect(() => {
     let isMounted = true;
 
@@ -41,24 +47,30 @@ export default function App() {
 
         const head = new TalkingHead(avatarContainerRef.current, {
           cameraView: 'head',
-          cameraDistance: 0.65,
+          cameraDistance: 0.6,
           cameraX: 0,
-          cameraY: 0.4,
+          cameraY: 0,
           avatarMood: 'neutral',
+
+          lipsyncModules: ['en'],
+
+          mixerGainSpeech: 1
         });
 
         await head.showAvatar({
           url: '/model.glb',
           body: 'F',
           avatarMood: 'neutral',
+          lipsyncLang: 'en'
         });
 
         if (isMounted) {
           headRef.current = head;
           setStatus('Gotowy do rozmowy');
         }
-      } catch (err) {
-        console.warn('Podgląd 3D niedostępny:', err);
+      } catch (err: any) {
+        console.error('[AVATAR ERROR]:', err);
+        if (isMounted) setStatus(`Błąd awatara: ${err.message || err}`);
       }
     }
 
@@ -70,60 +82,8 @@ export default function App() {
         headRef.current.stop();
         headRef.current = null;
       }
-      if (mouthAnimFrameRef.current) cancelAnimationFrame(mouthAnimFrameRef.current);
     };
   }, []);
-
-  // Automatyczny ruch ust w trakcie odtwarzania głosu
-  useEffect(() => {
-    if (!isSpeaking) {
-      // Wyzerowanie ust po zakończeniu mówienia
-      setMouthMorphs(0, 0);
-      if (mouthAnimFrameRef.current) cancelAnimationFrame(mouthAnimFrameRef.current);
-      return;
-    }
-
-    const animateMouth = () => {
-      const time = performance.now() / 1000;
-
-      // Naturalny rytm ludzkich sylab (kombinacja fal harmonicznych 9Hz i 4Hz)
-      const jawMovement = Math.max(0, Math.sin(time * 9.5) * 0.5 + Math.sin(time * 4.2) * 0.3 + 0.2);
-      const vowelMovement = Math.max(0, Math.cos(time * 7.0) * 0.4);
-
-      setMouthMorphs(jawMovement, vowelMovement);
-
-      mouthAnimFrameRef.current = requestAnimationFrame(animateMouth);
-    };
-
-    mouthAnimFrameRef.current = requestAnimationFrame(animateMouth);
-
-    return () => {
-      if (mouthAnimFrameRef.current) cancelAnimationFrame(mouthAnimFrameRef.current);
-    };
-  }, [isSpeaking]);
-
-  // Aplikacja wyłącznie właściwych celów morphingowych (bez blokad mouthClose)
-  const setMouthMorphs = (jawVal: number, vowelVal: number) => {
-    if (!headRef.current) return;
-    const rootScene = headRef.current.scene || headRef.current.avatar?.scene || headRef.current.avatar?.model;
-    if (!rootScene) return;
-
-    rootScene.traverse((child: any) => {
-      if (child.isMesh && child.morphTargetDictionary && child.morphTargetInfluences) {
-        const dict = child.morphTargetDictionary;
-        const influences = child.morphTargetInfluences;
-
-        // Ruch żuchwy i otwarcie ust
-        if (dict['jawOpen'] !== undefined) influences[dict['jawOpen']] = jawVal * 0.8;
-        if (dict['mouthOpen'] !== undefined) influences[dict['mouthOpen']] = jawVal * 0.6;
-        if (dict['viseme_aa'] !== undefined) influences[dict['viseme_aa']] = jawVal * 0.7;
-
-        // Ruchy samogłosek
-        if (dict['viseme_O'] !== undefined) influences[dict['viseme_O']] = vowelVal * 0.6;
-        if (dict['viseme_E'] !== undefined) influences[dict['viseme_E']] = vowelVal * 0.4;
-      }
-    });
-  };
 
   const cleanupMicContext = () => {
     if (micAnimationFrameRef.current) cancelAnimationFrame(micAnimationFrameRef.current);
@@ -134,57 +94,136 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  const handleAudioEnded = () => {
-    setIsSpeaking(false);
-    if (isHandsFreeRef.current) {
-      setStatus('Słucham Cię ponownie...');
-      setTimeout(() => {
-        if (isHandsFreeRef.current) startRecording();
-      }, 400);
-    } else {
-      setStatus('Dotknij mikrofonu, aby odpowiedzieć');
-    }
-  };
-
+  // Odtwarzanie dźwięku i synchronizacja ust z `kidschat`
   const playBackendTTS = async (text: string) => {
-    if (!text.trim()) return;
-    try {
-      setStatus('Marek przygotowuje odpowiedź...');
+  if (!text.trim()) return;
 
-      const response = await fetch('http://127.0.0.1:8000/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
+  try {
+    setStatus('Marek przygotowuje odpowiedź...');
+    setIsSpeaking(true);
 
-      if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
+    const response = await fetch('http://127.0.0.1:8000/api/tts', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ text }),
+    });
 
-      const audioBlob = await response.blob();
-      const newUrl = URL.createObjectURL(audioBlob);
-      setAudioUrl(newUrl);
-
-      setTimeout(async () => {
-        if (audioPlayerRef.current) {
-          try {
-            audioPlayerRef.current.currentTime = 0;
-            await audioPlayerRef.current.play();
-            setIsSpeaking(true);
-            setStatus('Marek mówi...');
-          } catch (playErr) {
-            console.warn('Autoodtwarzanie zablokowane:', playErr);
-          }
-        }
-      }, 50);
-    } catch (err: any) {
-      console.error('Błąd TTS:', err);
-      setIsSpeaking(false);
-      setStatus(`Błąd głosu: ${err.message}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Błąd HTTP ${response.status}: ${errorText}`);
     }
-  };
+
+    const data = await response.json();
+
+    console.log('[TTS]', data);
+    console.log('[WORDS]', data.words);
+    console.log('[WTIMES]', data.wtimes);
+    console.log('[WDURATIONS]', data.wdurations);
+
+    if (!headRef.current) {
+      throw new Error('TalkingHead nie jest zainicjalizowany');
+    }
+
+    // base64 -> ArrayBuffer
+    const binaryString = window.atob(data.audio);
+    const bytes = new Uint8Array(binaryString.length);
+
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    const arrayBuffer = bytes.buffer;
+
+    // AudioContext TalkingHead
+    const audioCtx = headRef.current.audioCtx;
+
+    if (!audioCtx) {
+      throw new Error('TalkingHead nie posiada AudioContext');
+    }
+
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+
+    console.log('[AUDIO CONTEXT]', audioCtx.state);
+
+    // MP3 -> AudioBuffer
+    const audioBuffer = await audioCtx.decodeAudioData(
+      arrayBuffer.slice(0)
+    );
+
+    console.log(
+      '[AUDIO BUFFER]',
+      audioBuffer.duration,
+      audioBuffer.sampleRate
+    );
+
+    setStatus('Marek odpowiada...');
+
+    /*
+      KLUCZOWA RÓŻNICA:
+
+      speakAudio dostaje OBIEKT,
+      a nie bezpośrednio AudioBuffer.
+    */
+    headRef.current.speakAudio(
+      {
+        audio: audioBuffer,
+
+        words: data.words,
+        wtimes: data.wtimes,
+        wdurations: data.wdurations
+      },
+      {
+        lipsyncLang: 'en'
+      }
+    );
+
+    /*
+      speakMarker zostanie wykonany,
+      kiedy poprzednia pozycja w kolejce mowy się zakończy.
+    */
+    headRef.current.speakMarker(() => {
+
+      console.log('[TALKINGHEAD] koniec mowy');
+
+      setIsSpeaking(false);
+
+      if (isHandsFreeRef.current) {
+
+        setStatus('Słucham Cię ponownie...');
+
+        setTimeout(() => {
+          if (isHandsFreeRef.current) {
+            startRecording();
+          }
+        }, 400);
+
+      } else {
+
+        setStatus('Dotknij mikrofonu, aby odpowiedzieć');
+
+      }
+    });
+
+  } catch (err: any) {
+
+    console.error('[TTS ERROR]:', err);
+
+    setIsSpeaking(false);
+
+    setStatus(
+      `Błąd mowy: ${err.message || err}`
+    );
+  }
+};
 
   const startRecording = async () => {
+    unlockAudioContext();
     try {
-      if (audioPlayerRef.current) audioPlayerRef.current.pause();
+      if (headRef.current) headRef.current.stopSpeaking();
       setIsSpeaking(false);
       cleanupMicContext();
 
@@ -254,6 +293,7 @@ export default function App() {
   };
 
   const stopRecording = () => {
+    unlockAudioContext();
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       cleanupMicContext();
@@ -324,6 +364,7 @@ export default function App() {
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    unlockAudioContext();
     if (!textInput.trim() || isLoading) return;
     const msg = textInput;
     setTextInput('');
@@ -339,6 +380,7 @@ export default function App() {
         </div>
         <button
           onClick={() => {
+            unlockAudioContext();
             const nextState = !isHandsFree;
             setIsHandsFree(nextState);
             if (nextState && !isRecording && !isSpeaking && !isLoading) startRecording();
@@ -369,22 +411,6 @@ export default function App() {
           <p className="text-lg leading-relaxed text-slate-100 min-h-[60px] text-center italic">
             {assistantText}
           </p>
-
-          {/* Odtwarzacz audio */}
-          {audioUrl && (
-            <audio
-              ref={audioPlayerRef}
-              src={audioUrl}
-              crossOrigin="anonymous"
-              className="hidden"
-              onPlay={() => setIsSpeaking(true)}
-              onEnded={handleAudioEnded}
-              onError={() => {
-                setIsSpeaking(false);
-                setStatus('Błąd odtwarzacza audio');
-              }}
-            />
-          )}
         </div>
       </section>
 

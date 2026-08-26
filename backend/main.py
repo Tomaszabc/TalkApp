@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from google import genai
 from google.genai import types
+import base64
 
 load_dotenv()
 
@@ -90,26 +91,75 @@ async def chat_stream(payload: ChatPayload):
 async def text_to_speech(payload: TTSPayload):
     try:
         cleaned_text = clean_text_for_speech(payload.text)
-        if not cleaned_text:
-            raise HTTPException(status_code=400, detail="Brak tekstu do odczytania")
 
-        # pl-PL-ZofiaNeural to oficjalny polski żeński głos neuronowy Edge
+        if not cleaned_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Brak tekstu do odczytania"
+            )
+
         communicate = edge_tts.Communicate(
             text=cleaned_text,
             voice="pl-PL-MarekNeural",
             rate="-4%"
         )
-        
+
         audio_data = bytearray()
+
+        words = []
+        wtimes = []
+        wdurations = []
+
         async for chunk in communicate.stream():
+
             if chunk["type"] == "audio":
                 audio_data.extend(chunk["data"])
 
-        return Response(content=bytes(audio_data), media_type="audio/mpeg")
+            elif chunk["type"] == "WordBoundary":
+
+                word = chunk.get("text", "")
+                offset = chunk.get("offset", 0)
+                duration = chunk.get("duration", 0)
+
+                # Edge TTS podaje czas w jednostkach 100 ns.
+                # TalkingHead oczekuje milisekund.
+                start_ms = offset / 10000
+                duration_ms = duration / 10000
+
+                words.append(word)
+                wtimes.append(start_ms)
+                wdurations.append(duration_ms)
+
+        if not audio_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Edge TTS nie zwrócił audio"
+            )
+
+        print("[TTS WORDS]", words)
+        print("[TTS TIMES]", wtimes)
+        print("[TTS DURATIONS]", wdurations)
+
+        audio_base64 = base64.b64encode(
+            bytes(audio_data)
+        ).decode("utf-8")
+
+        return {
+            "audio": audio_base64,
+            "words": words,
+            "wtimes": wtimes,
+            "wdurations": wdurations
+        }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         print(f"[BŁĄD TTS]: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 if __name__ == "__main__":
     import uvicorn
