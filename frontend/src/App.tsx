@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Volume2, Sparkles, Send, Loader2, Radio } from 'lucide-react';
+import { Mic, Square, Volume2, Sparkles, Send, Loader2, Radio, User } from 'lucide-react';
 
 export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [assistantText, setAssistantText] = useState('Dzień dobry! Kliknij mikrofon lub włącz tryb ciągły, aby porozmawiać.');
+  const [userText, setUserText] = useState(''); // Stan na tekst wypowiedziany przez użytkownika
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [status, setStatus] = useState('Inicjalizacja awatara...');
   const [textInput, setTextInput] = useState('');
@@ -96,129 +97,92 @@ export default function App() {
 
   // Odtwarzanie dźwięku i synchronizacja ust z `kidschat`
   const playBackendTTS = async (text: string) => {
-  if (!text.trim()) return;
+    if (!text.trim()) return;
 
-  try {
-    setStatus('Marek przygotowuje odpowiedź...');
-    setIsSpeaking(true);
+    try {
+      setStatus('Marek przygotowuje odpowiedź...');
+      setIsSpeaking(true);
 
-    const response = await fetch('http://127.0.0.1:8000/api/tts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ text }),
-    });
+      const response = await fetch('http://127.0.0.1:8000/api/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text }),
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Błąd HTTP ${response.status}: ${errorText}`);
-    }
-
-    const data = await response.json();
-
-    console.log('[TTS]', data);
-    console.log('[WORDS]', data.words);
-    console.log('[WTIMES]', data.wtimes);
-    console.log('[WDURATIONS]', data.wdurations);
-
-    if (!headRef.current) {
-      throw new Error('TalkingHead nie jest zainicjalizowany');
-    }
-
-    // base64 -> ArrayBuffer
-    const binaryString = window.atob(data.audio);
-    const bytes = new Uint8Array(binaryString.length);
-
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-
-    const arrayBuffer = bytes.buffer;
-
-    // AudioContext TalkingHead
-    const audioCtx = headRef.current.audioCtx;
-
-    if (!audioCtx) {
-      throw new Error('TalkingHead nie posiada AudioContext');
-    }
-
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
-
-    console.log('[AUDIO CONTEXT]', audioCtx.state);
-
-    // MP3 -> AudioBuffer
-    const audioBuffer = await audioCtx.decodeAudioData(
-      arrayBuffer.slice(0)
-    );
-
-    console.log(
-      '[AUDIO BUFFER]',
-      audioBuffer.duration,
-      audioBuffer.sampleRate
-    );
-
-    setStatus('Marek odpowiada...');
-
-    /*
-      KLUCZOWA RÓŻNICA:
-
-      speakAudio dostaje OBIEKT,
-      a nie bezpośrednio AudioBuffer.
-    */
-    headRef.current.speakAudio(
-      {
-        audio: audioBuffer,
-
-        words: data.words,
-        wtimes: data.wtimes,
-        wdurations: data.wdurations
-      },
-      {
-        lipsyncLang: 'en'
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Błąd HTTP ${response.status}: ${errorText}`);
       }
-    );
 
-    /*
-      speakMarker zostanie wykonany,
-      kiedy poprzednia pozycja w kolejce mowy się zakończy.
-    */
-    headRef.current.speakMarker(() => {
+      const data = await response.json();
 
-      console.log('[TALKINGHEAD] koniec mowy');
+      if (!headRef.current) {
+        throw new Error('TalkingHead nie jest zainicjalizowany');
+      }
 
+      // base64 -> ArrayBuffer
+      const binaryString = window.atob(data.audio);
+      const bytes = new Uint8Array(binaryString.length);
+
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const arrayBuffer = bytes.buffer;
+
+      // AudioContext TalkingHead
+      const audioCtx = headRef.current.audioCtx;
+
+      if (!audioCtx) {
+        throw new Error('TalkingHead nie posiada AudioContext');
+      }
+
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+
+      // MP3 -> AudioBuffer
+      const audioBuffer = await audioCtx.decodeAudioData(
+        arrayBuffer.slice(0)
+      );
+
+      setStatus('Marek odpowiada...');
+
+      headRef.current.speakAudio(
+        {
+          audio: audioBuffer,
+          words: data.words,
+          wtimes: data.wtimes,
+          wdurations: data.wdurations
+        },
+        {
+          lipsyncLang: 'en'
+        }
+      );
+
+      headRef.current.speakMarker(() => {
+        setIsSpeaking(false);
+
+        if (isHandsFreeRef.current) {
+          setStatus('Słucham Cię ponownie...');
+          setTimeout(() => {
+            if (isHandsFreeRef.current) {
+              startRecording();
+            }
+          }, 400);
+        } else {
+          setStatus('Dotknij mikrofonu, aby odpowiedzieć');
+        }
+      });
+
+    } catch (err: any) {
+      console.error('[TTS ERROR]:', err);
       setIsSpeaking(false);
-
-      if (isHandsFreeRef.current) {
-
-        setStatus('Słucham Cię ponownie...');
-
-        setTimeout(() => {
-          if (isHandsFreeRef.current) {
-            startRecording();
-          }
-        }, 400);
-
-      } else {
-
-        setStatus('Dotknij mikrofonu, aby odpowiedzieć');
-
-      }
-    });
-
-  } catch (err: any) {
-
-    console.error('[TTS ERROR]:', err);
-
-    setIsSpeaking(false);
-
-    setStatus(
-      `Błąd mowy: ${err.message || err}`
-    );
-  }
-};
+      setStatus(`Błąd mowy: ${err.message || err}`);
+    }
+  };
 
   const startRecording = async () => {
     unlockAudioContext();
@@ -312,6 +276,7 @@ export default function App() {
       const data = await response.json();
 
       if (data.text.trim()) {
+        setUserText(data.text); // Zapisujemy rozpoznany tekst użytkownika
         await handleStreamResponse(data.text);
       } else {
         if (isHandsFreeRef.current) {
@@ -367,6 +332,7 @@ export default function App() {
     unlockAudioContext();
     if (!textInput.trim() || isLoading) return;
     const msg = textInput;
+    setUserText(msg); // Zapisujemy tekst wpisany w pole tekstowe
     setTextInput('');
     handleStreamResponse(msg);
   };
@@ -395,7 +361,21 @@ export default function App() {
         </button>
       </header>
 
-      <section className="w-full max-w-lg my-auto py-4">
+      <section className="w-full max-w-lg my-auto py-4 space-y-4">
+        {/* Ramka wypowiedzi użytkownika */}
+        {userText && (
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-md flex flex-col gap-1.5 animate-fade-in">
+            <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold uppercase tracking-wider">
+              <User className="w-4 h-4" />
+              <span>Ty powiedziałaś / powiedziałeś:</span>
+            </div>
+            <p className="text-sm text-slate-200 leading-relaxed font-medium pl-6">
+              "{userText}"
+            </p>
+          </div>
+        )}
+
+        {/* Kontener awatara i odpowiedzi asystenta */}
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
           
           {/* Kontener awatara 3D */}

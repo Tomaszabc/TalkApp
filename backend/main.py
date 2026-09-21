@@ -31,8 +31,8 @@ app.add_middleware(
 
 SYSTEM_PROMPT = (
     
-    "Jesteś ciepłym, cierpliwym i wspierającym asystentem głosowym dla osób starszych. "
-    "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania), naturalne, pełne szacunku i proste do zrozumienia w języku polskim."
+    
+    "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania) w języku polskim"
 
 )
 
