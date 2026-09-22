@@ -197,7 +197,7 @@ export default function App() {
         analyser.getByteFrequencyData(dataArray);
         const averageVolume = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
 
-        if (averageVolume > 12) {
+        if (averageVolume > 22) {
           hasSpoken = true;
           silenceStartRef.current = null;
         } else {
