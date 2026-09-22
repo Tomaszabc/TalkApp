@@ -25,7 +25,7 @@ export default function App() {
     }
   };
 
-  // 1. Ładowanie Awatara - kontener jest dostępny od razu
+  // 1. Ładowanie Awatara
   useEffect(() => {
     let isMounted = true;
 
@@ -55,8 +55,7 @@ export default function App() {
 
         if (isMounted) {
           headRef.current = head;
-          setStatus('Naciśnij zielony przycisk, aby rozpocząć');
-          console.log('✅ Awatar gotowy!');
+          setStatus('Naciśnij przycisk, aby rozpocząć');
         }
       } catch (err: any) {
         console.error('[AVATAR ERROR]:', err);
@@ -84,7 +83,7 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // 2. Mowa i synchronizacja ust
+  // 2. Odwarzanie głosu AI
   const playBackendTTS = async (text: string) => {
     if (!text.trim()) {
       restartListeningLater();
@@ -93,7 +92,6 @@ export default function App() {
 
     try {
       setStatus('Marek przygotowuje odpowiedź...');
-      setIsSpeaking(true);
 
       const response = await fetch('http://127.0.0.1:8000/api/tts', {
         method: 'POST',
@@ -104,7 +102,7 @@ export default function App() {
       if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
       const data = await response.json();
 
-      if (!headRef.current) throw new Error('TalkingHead nie jest zainicjalizowany');
+      if (!headRef.current) throw new Error('TalkingHead niedostępny');
 
       const binaryString = window.atob(data.audio);
       const bytes = new Uint8Array(binaryString.length);
@@ -120,8 +118,8 @@ export default function App() {
       const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
 
       setStatus('Marek odpowiada...');
+      setIsSpeaking(true);
 
-      // Przeskalowanie animacji ust dla wolniejszego ruchu (2x)
       const SLOW_FACTOR = 2.0;
 
       headRef.current.speakAudio(
@@ -134,10 +132,10 @@ export default function App() {
         { lipsyncLang: 'fi' }
       );
 
+      // Dopiero gdy Marek SKOŃCZY mówić -> włączamy mikrofon
       headRef.current.speakMarker(() => {
         setIsSpeaking(false);
-        // Po zakończeniu mowy wznawiamy automatyczny nasłuch
-        restartListeningLater(600);
+        restartListeningLater(400);
       });
 
     } catch (err: any) {
@@ -147,7 +145,7 @@ export default function App() {
     }
   };
 
-  // 3. Ciągły nasłuch z detekcją ciszy
+  // 3. Nasłuch mikrofonu (Sekwencyjny)
   const startRecording = async () => {
     unlockAudioContext();
     cleanupMicContext();
@@ -220,7 +218,7 @@ export default function App() {
       checkSilence();
     } catch (err) {
       console.error(err);
-      setStatus('Błąd mikrofonu. Ponawiam za 3 sekundy...');
+      setStatus('Błąd mikrofonu. Ponawiam...');
       restartListeningLater(3000);
     }
   };
@@ -235,7 +233,7 @@ export default function App() {
     }
   };
 
-  const restartListeningLater = (delayMs = 500) => {
+  const restartListeningLater = (delayMs = 400) => {
     setTimeout(() => {
       startRecording();
     }, delayMs);
@@ -255,7 +253,7 @@ export default function App() {
         await handleStreamResponse(data.text);
       } else {
         setIsLoading(false);
-        restartListeningLater(400);
+        restartListeningLater(300);
       }
     } catch (err) {
       setIsLoading(false);
@@ -289,7 +287,9 @@ export default function App() {
           setAssistantText((prev) => prev + chunk);
         }
       }
+
       await playBackendTTS(fullText);
+
     } catch (err: any) {
       setAssistantText('Wystąpił problem z połączeniem.');
       setIsLoading(false);
@@ -300,13 +300,12 @@ export default function App() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between items-center p-6 select-none font-sans relative overflow-hidden">
       
-      {/* 4. Nakładka startowa do odblokowania Audio (nie ukrywa DOM-u awatara!) */}
       {!isStarted && (
         <div className="absolute inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
           <div className="max-w-lg space-y-8 bg-slate-900 border border-slate-800 p-10 rounded-3xl shadow-2xl">
             <h1 className="text-4xl font-extrabold text-emerald-400">Asystent dla Babci</h1>
             <p className="text-2xl text-slate-300 leading-relaxed">
-              Kliknij poniższy przycisk, aby włączyć automatyczną rozmowę.
+              Kliknij poniższy przycisk, aby zacząć rozmowę.
             </p>
             <button
               onClick={() => {
@@ -323,9 +322,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Widok Główny */}
       <section className="w-full max-w-3xl my-auto space-y-6">
-        
         {userText && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
             <span className="text-emerald-400 text-sm font-bold uppercase tracking-wider block mb-1">
@@ -336,13 +333,16 @@ export default function App() {
         )}
 
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
-          
-          {/* Kontener Awatara (zawsze wyrenderowany w DOM) */}
           <div className="w-full h-96 bg-slate-950 rounded-2xl overflow-hidden relative border border-slate-800/80 shadow-inner">
             <div ref={avatarContainerRef} className="w-full h-full" />
 
             <div className="absolute top-4 left-4 bg-slate-900/90 border border-slate-700 px-4 py-2 rounded-full flex items-center gap-3">
-              {isRecording ? (
+              {isSpeaking ? (
+                <>
+                  <Volume2 className="w-5 h-5 text-emerald-400 animate-pulse" />
+                  <span className="text-emerald-400 font-bold">MÓWIĘ...</span>
+                </>
+              ) : isRecording ? (
                 <>
                   <span className="w-3.5 h-3.5 bg-rose-500 rounded-full animate-ping" />
                   <span className="text-rose-400 font-bold">SŁUCHAM...</span>
@@ -352,18 +352,12 @@ export default function App() {
                   <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
                   <span className="text-amber-400 font-bold">MYŚLĘ...</span>
                 </>
-              ) : isSpeaking ? (
-                <>
-                  <Volume2 className="w-4 h-4 text-emerald-400 animate-pulse" />
-                  <span className="text-emerald-400 font-bold">MÓWIĘ...</span>
-                </>
               ) : (
                 <span className="text-slate-400 font-medium">{status}</span>
               )}
             </div>
           </div>
 
-          {/* Duży tekst odpowiedzi dla seniora */}
           <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 min-h-[90px] flex items-center justify-center">
             <p className="text-2xl font-medium leading-relaxed text-slate-100 text-center">
               {assistantText}
@@ -372,12 +366,12 @@ export default function App() {
         </div>
       </section>
 
-      {/* Dolny pasek stanu mikrofonu */}
       <footer className="w-full max-w-md flex flex-col items-center pb-4">
         <div className={`p-5 rounded-full transition-all duration-300 ${
+          isSpeaking ? 'bg-emerald-500/20 border-2 border-emerald-500' :
           isRecording ? 'bg-rose-500/20 border-2 border-rose-500 scale-110' : 'bg-slate-900 border border-slate-800'
         }`}>
-          <Mic className={`w-10 h-10 ${isRecording ? 'text-rose-500 animate-pulse' : 'text-slate-500'}`} />
+          <Mic className={`w-10 h-10 ${isSpeaking ? 'text-emerald-400' : isRecording ? 'text-rose-500 animate-pulse' : 'text-slate-500'}`} />
         </div>
         <p className="text-lg font-semibold text-slate-400 mt-2">{status}</p>
       </footer>
