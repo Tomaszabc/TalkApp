@@ -110,54 +110,52 @@ async def text_to_speech(req: TTSRequest):
         return {"audio": "", "words": [], "wtimes": [], "wdurations": []}
 
     voice = "pl-PL-MarekNeural"
-    
-    # Tworzymy obiekt komunikacji
     communicate = edge_tts.Communicate(clean_text, voice)
+    submaker = edge_tts.SubMaker()
     
     audio_bytes = bytearray()
-    words = []
-    wtimes = []
-    wdurations = []
 
     try:
-        # Pętla stream_async() dostarcza obiekty zdarzeń WordBoundary
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio_bytes.extend(chunk["data"])
             elif chunk["type"] == "WordBoundary":
-                # edge-tts zwraca offset i duration w jednostkach 100 ns (1 ms = 10 000 tics)
-                offset_ms = int(chunk["offset"] / 10000)
-                duration_ms = int(chunk["duration"] / 10000)
-                
-                # Wyciągnięcie słowa z obiektu zdarzenia
-                raw_text = chunk["text"]
-                clean_word = remove_diacritics(raw_text.strip(".,!?\"'()"))
-                
-                if clean_word:
-                    words.append(clean_word)
-                    wtimes.append(offset_ms)
-                    wdurations.append(duration_ms)
+                submaker.feed(chunk)
 
     except Exception as e:
         print(f"[BŁĄD EDGE-TTS]: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Jeśli z jakiegoś powodu edge-tts nadal nie wygenerował WordBoundary dla danego tekstu (fallback)
+    words = []
+    wtimes = []
+    wdurations = []
+
+    # Pobranie wyliczonych klatek czasowych z submakera
+    for sub in submaker.cues:
+        raw_word = sub.start
+        # Konwersja timedelta na milisekundy
+        start_ms = int(sub.start.total_seconds() * 1000)
+        end_ms = int(sub.end.total_seconds() * 1000)
+        duration_ms = max(50, end_ms - start_ms)
+
+        clean_word = remove_diacritics(sub.line.strip(".,!?\"'()"))
+        if clean_word:
+            words.append(clean_word)
+            wtimes.append(start_ms)
+            wdurations.append(duration_ms)
+
+    # Zapasowy algorytm podziału na wypadek braku cues
     if not words and clean_text:
-        print("⚠️ WARN: Brak zdarzeń WordBoundary z Edge-TTS. Uruchamiam estymację czasową.")
         raw_words = [remove_diacritics(w.strip(".,!?\"'()")) for w in clean_text.split() if w.strip()]
+        total_duration_ms = int((len(audio_bytes) * 8) / 128) # szacowany czas MP3 w ms
+        avg_dur = max(100, int(total_duration_ms / max(1, len(raw_words))))
         
-        # Przybliżony czas trwania audio na podstawie rozmiaru bajtów MP3 (ok. 128 kbps)
-        estimated_total_ms = int((len(audio_bytes) * 8) / 128)
-        avg_duration = max(100, int(estimated_total_ms / max(1, len(raw_words))))
-        
-        current_time = 0
+        curr = 0
         for w in raw_words:
-            if w:
-                words.append(w)
-                wtimes.append(current_time)
-                wdurations.append(avg_duration)
-                current_time += avg_duration
+            words.append(w)
+            wtimes.append(curr)
+            wdurations.append(avg_dur)
+            curr += avg_dur
 
     audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
     

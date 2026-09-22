@@ -42,6 +42,7 @@ export default function App() {
     async function initAvatar() {
       if (!avatarContainerRef.current || headRef.current) return;
       try {
+        // @ts-ignore
         const module = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/modules/talkinghead.mjs');
         const TalkingHead = module.TalkingHead;
 
@@ -159,14 +160,13 @@ export default function App() {
       );
 
       setStatus('Marek odpowiada...');
-
-      // Wywołanie mowy awatara
+      
       headRef.current.speakAudio(
         {
           audio: audioBuffer,
           words: data.words || [],
           wtimes: data.wtimes || [],
-          wdurations: (data.wdurations || []).map((d: number) => d * 2)
+          wdurations: data.wdurations || []
         },
         {
           lipsyncLang: 'fi'
