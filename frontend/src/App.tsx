@@ -5,7 +5,7 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [assistantText, setAssistantText] = useState('Dzień dobry! Kliknij mikrofon lub włącz tryb ciągły, aby porozmawiać.');
-  const [userText, setUserText] = useState(''); // Stan na tekst wypowiedziany przez użytkownika
+  const [userText, setUserText] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [status, setStatus] = useState('Inicjalizacja awatara...');
   const [textInput, setTextInput] = useState('');
@@ -27,7 +27,6 @@ export default function App() {
   const avatarContainerRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<any>(null);
 
-  // Natychmiastowe odblokowanie kontekstu audio (w trakcie kliknięcia użytkownika)
   const unlockAudioContext = () => {
     if (headRef.current?.audioCtx) {
       if (headRef.current.audioCtx.state === 'suspended') {
@@ -36,7 +35,7 @@ export default function App() {
     }
   };
 
-  // Inicjalizacja TalkingHead z modelem julia.glb (kidschat)
+  // Inicjalizacja TalkingHead
   useEffect(() => {
     let isMounted = true;
 
@@ -52,9 +51,7 @@ export default function App() {
           cameraX: 0,
           cameraY: 0,
           avatarMood: 'neutral',
-
           lipsyncModules: ['en', 'fi'],
-
           mixerGainSpeech: 1
         });
 
@@ -68,34 +65,8 @@ export default function App() {
         if (isMounted) {
           headRef.current = head;
           setStatus('Gotowy do rozmowy');
+          console.log('✅ Awatar załadowany pomyślnie!', head);
         }
-
-        // === [DIAGNOSTYKA 3: SPRAWDZENIE MODELU 3D] ===
-        console.group('🎭 SPRAWDZANIE SIATKI 3D I BLENDSHAPES');
-        let foundVisemes = false;
-
-        if (head.avatar) {
-          head.avatar.traverse((child: any) => {
-            if (child.isMesh && child.morphTargetDictionary) {
-              console.log(`Mesh: "${child.name}" posiada Morph Targets:`, child.morphTargetDictionary);
-              
-              // Sprawdzenie, czy istnieją kluczowe kształty ust
-              const keys = Object.keys(child.morphTargetDictionary);
-              const hasVisemeKeys = keys.some(k => k.toLowerCase().includes('viseme') || k.toLowerCase().includes('jaw'));
-              
-              if (hasVisemeKeys) {
-                foundVisemes = true;
-              }
-            }
-          });
-        }
-
-        if (foundVisemes) {
-          console.log('✅ SUKCES: Model posiada kształty ust (visemes/jaw)!');
-        } else {
-          console.error('❌ BŁĄD CRITICAL: Twój plik /model.glb NIE POSIADA kształtów ust do animacji!');
-        }
-        console.groupEnd();
       } catch (err: any) {
         console.error('[AVATAR ERROR]:', err);
         if (isMounted) setStatus(`Błąd awatara: ${err.message || err}`);
@@ -122,7 +93,7 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // Odtwarzanie dźwięku i synchronizacja ust z `kidschat`
+  // Odtwarzanie dźwięku i synchronizacja ust
   const playBackendTTS = async (text: string) => {
     if (!text.trim()) return;
 
@@ -145,8 +116,18 @@ export default function App() {
 
       const data = await response.json();
 
-
+      // DIAGNOSTYKA ODPOWIEDZI BACKENDU
+      console.group('🔍 ODPOWIEDŹ Z BACKENDU (/api/tts)');
+      console.log('Słowa (words):', data.words);
+      console.log('Czasy startu (wtimes):', data.wtimes);
+      console.log('Czasy trwania (wdurations):', data.wdurations);
+      console.log('Długość ciągu Audio (base64 length):', data.audio ? data.audio.length : 0);
       
+      if (!data.words || data.words.length === 0) {
+        console.error('❌ PROBLEM: Backend przekazał pusta tablicę "words". Usta nie będą się ruszać.');
+      }
+      console.groupEnd();
+
       if (!headRef.current) {
         throw new Error('TalkingHead nie jest zainicjalizowany');
       }
@@ -178,40 +159,14 @@ export default function App() {
       );
 
       setStatus('Marek odpowiada...');
-      // === [DIAGNOSTYKA 1: DANE Z BACKENDU] ===
-      console.group('🔍 DIAGNOSTYKA LIP-SYNC');
-      console.log('1. Słowa:', data.words);
-      console.log('2. Czasy startu (wtimes):', data.wtimes);
-      console.log('3. Czas trwania (wdurations):', data.wdurations);
 
-      // Sprawdzenie, czy tablice są poprawne
-      if (!data.words.length || !data.wtimes.length) {
-        console.error('❌ BŁĄD: Backend zwrócił puste tablice słów lub czasów!');
-      }
-
-      // === [DIAGNOSTYKA 2: GENEROWANE VISEMY (KSZTAŁTY UST)] ===
-      if (headRef.current?.lipsync) {
-        const visemesDebug = headRef.current.lipsync.wordsToVisemes(
-          data.words,
-          data.wtimes,
-          data.wdurations,
-          'fi' // lub 'en'
-        );
-        console.log('4. Wygenerowane Visemy dla silnika 3D:', visemesDebug);
-
-        if (!visemesDebug || visemesDebug.visemes.length === 0) {
-          console.warn('⚠️ OSTRZEŻENIE: Moduł lipsync nie utworzył żadnych kształtów ust z podanych słów!');
-        }
-      }
-      console.groupEnd();
-
-
+      // Wywołanie mowy awatara
       headRef.current.speakAudio(
         {
           audio: audioBuffer,
-          words: data.words,
-          wtimes: data.wtimes,
-          wdurations: data.wdurations
+          words: data.words || [],
+          wtimes: data.wtimes || [],
+          wdurations: data.wdurations || []
         },
         {
           lipsyncLang: 'fi'
@@ -332,7 +287,7 @@ export default function App() {
       const data = await response.json();
 
       if (data.text.trim()) {
-        setUserText(data.text); // Zapisujemy rozpoznany tekst użytkownika
+        setUserText(data.text);
         await handleStreamResponse(data.text);
       } else {
         if (isHandsFreeRef.current) {
@@ -388,7 +343,7 @@ export default function App() {
     unlockAudioContext();
     if (!textInput.trim() || isLoading) return;
     const msg = textInput;
-    setUserText(msg); // Zapisujemy tekst wpisany w pole tekstowe
+    setUserText(msg);
     setTextInput('');
     handleStreamResponse(msg);
   };
@@ -418,7 +373,6 @@ export default function App() {
       </header>
 
       <section className="w-full max-w-lg my-auto py-4 space-y-4">
-        {/* Ramka wypowiedzi użytkownika */}
         {userText && (
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-md flex flex-col gap-1.5 animate-fade-in">
             <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold uppercase tracking-wider">
@@ -431,10 +385,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Kontener awatara i odpowiedzi asystenta */}
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
-          
-          {/* Kontener awatara 3D */}
           <div className="w-full h-80 bg-slate-950 rounded-2xl overflow-hidden relative border border-slate-800/60 shadow-inner">
             <div ref={avatarContainerRef} className="w-full h-full" />
           </div>
