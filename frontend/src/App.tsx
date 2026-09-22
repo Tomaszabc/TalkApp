@@ -53,7 +53,7 @@ export default function App() {
           cameraY: 0,
           avatarMood: 'neutral',
 
-          lipsyncModules: ['en'],
+          lipsyncModules: ['en', 'fi'],
 
           mixerGainSpeech: 1
         });
@@ -62,13 +62,40 @@ export default function App() {
           url: '/model.glb',
           body: 'F',
           avatarMood: 'neutral',
-          lipsyncLang: 'en'
+          lipsyncLang: 'fi'
         });
 
         if (isMounted) {
           headRef.current = head;
           setStatus('Gotowy do rozmowy');
         }
+
+        // === [DIAGNOSTYKA 3: SPRAWDZENIE MODELU 3D] ===
+        console.group('🎭 SPRAWDZANIE SIATKI 3D I BLENDSHAPES');
+        let foundVisemes = false;
+
+        if (head.avatar) {
+          head.avatar.traverse((child: any) => {
+            if (child.isMesh && child.morphTargetDictionary) {
+              console.log(`Mesh: "${child.name}" posiada Morph Targets:`, child.morphTargetDictionary);
+              
+              // Sprawdzenie, czy istnieją kluczowe kształty ust
+              const keys = Object.keys(child.morphTargetDictionary);
+              const hasVisemeKeys = keys.some(k => k.toLowerCase().includes('viseme') || k.toLowerCase().includes('jaw'));
+              
+              if (hasVisemeKeys) {
+                foundVisemes = true;
+              }
+            }
+          });
+        }
+
+        if (foundVisemes) {
+          console.log('✅ SUKCES: Model posiada kształty ust (visemes/jaw)!');
+        } else {
+          console.error('❌ BŁĄD CRITICAL: Twój plik /model.glb NIE POSIADA kształtów ust do animacji!');
+        }
+        console.groupEnd();
       } catch (err: any) {
         console.error('[AVATAR ERROR]:', err);
         if (isMounted) setStatus(`Błąd awatara: ${err.message || err}`);
@@ -118,6 +145,8 @@ export default function App() {
 
       const data = await response.json();
 
+
+      
       if (!headRef.current) {
         throw new Error('TalkingHead nie jest zainicjalizowany');
       }
@@ -149,6 +178,33 @@ export default function App() {
       );
 
       setStatus('Marek odpowiada...');
+      // === [DIAGNOSTYKA 1: DANE Z BACKENDU] ===
+      console.group('🔍 DIAGNOSTYKA LIP-SYNC');
+      console.log('1. Słowa:', data.words);
+      console.log('2. Czasy startu (wtimes):', data.wtimes);
+      console.log('3. Czas trwania (wdurations):', data.wdurations);
+
+      // Sprawdzenie, czy tablice są poprawne
+      if (!data.words.length || !data.wtimes.length) {
+        console.error('❌ BŁĄD: Backend zwrócił puste tablice słów lub czasów!');
+      }
+
+      // === [DIAGNOSTYKA 2: GENEROWANE VISEMY (KSZTAŁTY UST)] ===
+      if (headRef.current?.lipsync) {
+        const visemesDebug = headRef.current.lipsync.wordsToVisemes(
+          data.words,
+          data.wtimes,
+          data.wdurations,
+          'fi' // lub 'en'
+        );
+        console.log('4. Wygenerowane Visemy dla silnika 3D:', visemesDebug);
+
+        if (!visemesDebug || visemesDebug.visemes.length === 0) {
+          console.warn('⚠️ OSTRZEŻENIE: Moduł lipsync nie utworzył żadnych kształtów ust z podanych słów!');
+        }
+      }
+      console.groupEnd();
+
 
       headRef.current.speakAudio(
         {
@@ -158,7 +214,7 @@ export default function App() {
           wdurations: data.wdurations
         },
         {
-          lipsyncLang: 'en'
+          lipsyncLang: 'fi'
         }
       );
 

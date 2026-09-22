@@ -11,6 +11,8 @@ from google import genai
 from google.genai import types
 import base64
 
+import unicodedata
+
 load_dotenv()
 
 # Inicjalizacja Gemini
@@ -47,6 +49,13 @@ def clean_text_for_speech(text: str) -> str:
     """Usuwa formatowanie Markdown, aby lektor czytał tylko czysty tekst."""
     text = re.sub(r'[*_~#`>\-]', '', text)
     return text.strip()
+
+def remove_polish_diactritics(text: str) -> str:
+    """Zamienia polskie znaki na litery łacińskie (np. ą -> a, ł -> l)."""
+    nfkd_form = unicodedata.normalize('NFKD', text)
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
+
 
 # 1. Transkrypcja nagrania audio z Gemini
 @app.post("/api/transcribe")
@@ -143,10 +152,11 @@ async def text_to_speech(payload: TTSPayload):
         audio_base64 = base64.b64encode(
             bytes(audio_data)
         ).decode("utf-8")
-
+        # Przekształć listę słów, aby nie zawierała polskich znaków ani interpunkcji
+        cleaned_words = [remove_polish_diactritics(w.strip(".,!?")) for w in words]
         return {
             "audio": audio_base64,
-            "words": words,
+            "words": cleaned_words, # Wyczyszczona lista słów dla modułu lipsync
             "wtimes": wtimes,
             "wdurations": wdurations
         }
