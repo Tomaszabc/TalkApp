@@ -32,10 +32,10 @@ app.add_middleware(
 )
 
 SYSTEM_PROMPT = (
-    
-    
-    "Twoje odpowiedzi powinny być zwięzłe (1-3 zdania) w języku polskim"
-
+    "Jesteś miłym, troskliwym i cierpliwym asystentem domowym dla starszej osoby (babci). "
+    "Odpowiadaj bardzo ciepłym i uprzejmym tonem. "
+    "Twoje odpowiedzi MUSZĄ być proste i zwięzłe (1 do maksymalnie 2 krótkich zdań). "
+    "Nie używaj skomplikowanych słów ani anglicyzmów."
 )
 
 class ChatPayload(BaseModel):
@@ -103,6 +103,7 @@ async def chat_stream(payload: ChatPayload):
     )
 
 # 3. Synteza mowy - pobieranie słów bezpośrednio ze zdarzeń WordBoundary
+# main.py
 @app.post("/api/tts")
 async def text_to_speech(req: TTSRequest):
     clean_text = clean_text_for_speech(req.text)
@@ -130,10 +131,8 @@ async def text_to_speech(req: TTSRequest):
     wtimes = []
     wdurations = []
 
-    # Pobranie wyliczonych klatek czasowych z submakera
+    # Odczyt prawdziwych czasów słów z SubMakera
     for sub in submaker.cues:
-        raw_word = sub.start
-        # Konwersja timedelta na milisekundy
         start_ms = int(sub.start.total_seconds() * 1000)
         end_ms = int(sub.end.total_seconds() * 1000)
         duration_ms = max(50, end_ms - start_ms)
@@ -144,10 +143,10 @@ async def text_to_speech(req: TTSRequest):
             wtimes.append(start_ms)
             wdurations.append(duration_ms)
 
-    # Zapasowy algorytm podziału na wypadek braku cues
+    # Rezerwa, jeśli brak zdarzeń cues
     if not words and clean_text:
         raw_words = [remove_diacritics(w.strip(".,!?\"'()")) for w in clean_text.split() if w.strip()]
-        total_duration_ms = int((len(audio_bytes) * 8) / 128) # szacowany czas MP3 w ms
+        total_duration_ms = int((len(audio_bytes) * 8) / 128)
         avg_dur = max(100, int(total_duration_ms / max(1, len(raw_words))))
         
         curr = 0

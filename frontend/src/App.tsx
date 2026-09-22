@@ -1,21 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Volume2, Sparkles, Send, Loader2, Radio, User } from 'lucide-react';
+import { Volume2, Mic, Play, Loader2 } from 'lucide-react';
 
 export default function App() {
-  const [isRecording, setIsRecording] = useState(false);
+  const [isStarted, setIsStarted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [assistantText, setAssistantText] = useState('Dzień dobry! Kliknij mikrofon lub włącz tryb ciągły, aby porozmawiać.');
+  const [assistantText, setAssistantText] = useState('Dzień dobry! Jestem gotowy do rozmowy.');
   const [userText, setUserText] = useState('');
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [status, setStatus] = useState('Inicjalizacja awatara...');
-  const [textInput, setTextInput] = useState('');
-
-  // Tryb ciągły (Hands-Free)
-  const [isHandsFree, setIsHandsFree] = useState(false);
-  const isHandsFreeRef = useRef(isHandsFree);
-  useEffect(() => {
-    isHandsFreeRef.current = isHandsFree;
-  }, [isHandsFree]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [status, setStatus] = useState('Ładowanie awatara...');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -23,19 +16,16 @@ export default function App() {
   const micAnimationFrameRef = useRef<number | null>(null);
   const silenceStartRef = useRef<number | null>(null);
 
-  // Instancja TalkingHead
   const avatarContainerRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<any>(null);
 
   const unlockAudioContext = () => {
-    if (headRef.current?.audioCtx) {
-      if (headRef.current.audioCtx.state === 'suspended') {
-        headRef.current.audioCtx.resume().catch((err: any) => console.warn('Błąd odblokowania AudioContext:', err));
-      }
+    if (headRef.current?.audioCtx && headRef.current.audioCtx.state === 'suspended') {
+      headRef.current.audioCtx.resume().catch(console.warn);
     }
   };
 
-  // Inicjalizacja TalkingHead
+  // 1. Ładowanie Awatara - kontener jest dostępny od razu
   useEffect(() => {
     let isMounted = true;
 
@@ -65,8 +55,8 @@ export default function App() {
 
         if (isMounted) {
           headRef.current = head;
-          setStatus('Gotowy do rozmowy');
-          console.log('✅ Awatar załadowany pomyślnie!', head);
+          setStatus('Naciśnij zielony przycisk, aby rozpocząć');
+          console.log('✅ Awatar gotowy!');
         }
       } catch (err: any) {
         console.error('[AVATAR ERROR]:', err);
@@ -94,9 +84,12 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // Odtwarzanie dźwięku i synchronizacja ust
+  // 2. Mowa i synchronizacja ust
   const playBackendTTS = async (text: string) => {
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      restartListeningLater();
+      return;
+    }
 
     try {
       setStatus('Marek przygotowuje odpowiedź...');
@@ -104,103 +97,64 @@ export default function App() {
 
       const response = await fetch('http://127.0.0.1:8000/api/tts', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Błąd HTTP ${response.status}: ${errorText}`);
-      }
-
+      if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
       const data = await response.json();
 
-      // DIAGNOSTYKA ODPOWIEDZI BACKENDU
-      console.group('🔍 ODPOWIEDŹ Z BACKENDU (/api/tts)');
-      console.log('Słowa (words):', data.words);
-      console.log('Czasy startu (wtimes):', data.wtimes);
-      console.log('Czasy trwania (wdurations):', data.wdurations);
-      console.log('Długość ciągu Audio (base64 length):', data.audio ? data.audio.length : 0);
-      
-      if (!data.words || data.words.length === 0) {
-        console.error('❌ PROBLEM: Backend przekazał pusta tablicę "words". Usta nie będą się ruszać.');
-      }
-      console.groupEnd();
+      if (!headRef.current) throw new Error('TalkingHead nie jest zainicjalizowany');
 
-      if (!headRef.current) {
-        throw new Error('TalkingHead nie jest zainicjalizowany');
-      }
-
-      // base64 -> ArrayBuffer
       const binaryString = window.atob(data.audio);
       const bytes = new Uint8Array(binaryString.length);
-
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      const arrayBuffer = bytes.buffer;
-
-      // AudioContext TalkingHead
       const audioCtx = headRef.current.audioCtx;
-
-      if (!audioCtx) {
-        throw new Error('TalkingHead nie posiada AudioContext');
-      }
-
-      if (audioCtx.state === 'suspended') {
+      if (audioCtx && audioCtx.state === 'suspended') {
         await audioCtx.resume();
       }
 
-      // MP3 -> AudioBuffer
-      const audioBuffer = await audioCtx.decodeAudioData(
-        arrayBuffer.slice(0)
-      );
+      const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
 
       setStatus('Marek odpowiada...');
-      
+
+      // Przeskalowanie animacji ust dla wolniejszego ruchu (2x)
+      const SLOW_FACTOR = 2.0;
+
       headRef.current.speakAudio(
         {
           audio: audioBuffer,
           words: data.words || [],
-          wtimes: data.wtimes || [],
-          wdurations: data.wdurations || []
+          wtimes: (data.wtimes || []).map((t: number) => t * SLOW_FACTOR),
+          wdurations: (data.wdurations || []).map((d: number) => d * SLOW_FACTOR)
         },
-        {
-          lipsyncLang: 'fi'
-        }
+        { lipsyncLang: 'fi' }
       );
 
       headRef.current.speakMarker(() => {
         setIsSpeaking(false);
-
-        if (isHandsFreeRef.current) {
-          setStatus('Słucham Cię ponownie...');
-          setTimeout(() => {
-            if (isHandsFreeRef.current) {
-              startRecording();
-            }
-          }, 400);
-        } else {
-          setStatus('Dotknij mikrofonu, aby odpowiedzieć');
-        }
+        // Po zakończeniu mowy wznawiamy automatyczny nasłuch
+        restartListeningLater(600);
       });
 
     } catch (err: any) {
       console.error('[TTS ERROR]:', err);
       setIsSpeaking(false);
-      setStatus(`Błąd mowy: ${err.message || err}`);
+      restartListeningLater(1500);
     }
   };
 
+  // 3. Ciągły nasłuch z detekcją ciszy
   const startRecording = async () => {
     unlockAudioContext();
+    cleanupMicContext();
+
     try {
       if (headRef.current) headRef.current.stopSpeaking();
       setIsSpeaking(false);
-      cleanupMicContext();
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -217,12 +171,13 @@ export default function App() {
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((track) => track.stop());
         cleanupMicContext();
+        setIsRecording(false);
         await sendAudioToBackend(new Blob(audioChunksRef.current, { type: 'audio/webm' }));
       };
 
       mediaRecorder.start();
       setIsRecording(true);
-      setStatus('Słucham... (powiedz coś)');
+      setStatus('Słucham Cię...');
 
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       micAudioContextRef.current = audioContext;
@@ -244,7 +199,7 @@ export default function App() {
         analyser.getByteFrequencyData(dataArray);
         const averageVolume = dataArray.reduce((acc, val) => acc + val, 0) / dataArray.length;
 
-        if (averageVolume > 14) {
+        if (averageVolume > 12) {
           hasSpoken = true;
           silenceStartRef.current = null;
         } else {
@@ -252,8 +207,11 @@ export default function App() {
             silenceStartRef.current = Date.now();
           } else {
             const silentDuration = Date.now() - silenceStartRef.current;
-            if (hasSpoken && silentDuration > 1800) { stopRecording(); return; }
-            if (!hasSpoken && silentDuration > 10000 && !isHandsFreeRef.current) { stopRecording(); return; }
+            // 3.5 sekundy ciszy = koniec wypowiedzi babci
+            if (hasSpoken && silentDuration > 3500) {
+              stopRecording();
+              return;
+            }
           }
         }
         micAnimationFrameRef.current = requestAnimationFrame(checkSilence);
@@ -262,8 +220,8 @@ export default function App() {
       checkSilence();
     } catch (err) {
       console.error(err);
-      setStatus('Brak dostępu do mikrofonu');
-      setIsHandsFree(false);
+      setStatus('Błąd mikrofonu. Ponawiam za 3 sekundy...');
+      restartListeningLater(3000);
     }
   };
 
@@ -272,10 +230,15 @@ export default function App() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
       cleanupMicContext();
-      setIsRecording(false);
       setIsLoading(true);
       setStatus('Przetwarzam wypowiedź...');
     }
+  };
+
+  const restartListeningLater = (delayMs = 500) => {
+    setTimeout(() => {
+      startRecording();
+    }, delayMs);
   };
 
   const sendAudioToBackend = async (audioBlob: Blob) => {
@@ -283,25 +246,20 @@ export default function App() {
       const formData = new FormData();
       formData.append('file', audioBlob, 'recording.webm');
       const response = await fetch('http://127.0.0.1:8000/api/transcribe', { method: 'POST', body: formData });
+      
       if (!response.ok) throw new Error('Błąd transkrypcji');
       const data = await response.json();
 
-      if (data.text.trim()) {
+      if (data.text && data.text.trim()) {
         setUserText(data.text);
         await handleStreamResponse(data.text);
       } else {
-        if (isHandsFreeRef.current) {
-          setStatus('Nie usłyszałem. Słucham ponownie...');
-          setIsLoading(false);
-          setTimeout(() => startRecording(), 500);
-        } else {
-          setStatus('Nie usłyszałem wypowiedzi.');
-          setIsLoading(false);
-        }
+        setIsLoading(false);
+        restartListeningLater(400);
       }
     } catch (err) {
-      setStatus('Błąd transkrypcji');
       setIsLoading(false);
+      restartListeningLater(2000);
     }
   };
 
@@ -314,7 +272,7 @@ export default function App() {
       const response = await fetch('http://127.0.0.1:8000/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: 'senior_1', message: userPrompt }),
+        body: JSON.stringify({ user_id: 'babcia', message: userPrompt }),
       });
 
       if (!response.ok) throw new Error(`Błąd HTTP: ${response.status}`);
@@ -333,110 +291,95 @@ export default function App() {
       }
       await playBackendTTS(fullText);
     } catch (err: any) {
-      setAssistantText(`Wystąpił problem: ${err.message}`);
-      setStatus('Błąd połączenia');
+      setAssistantText('Wystąpił problem z połączeniem.');
+      setIsLoading(false);
+      restartListeningLater(3000);
     }
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    unlockAudioContext();
-    if (!textInput.trim() || isLoading) return;
-    const msg = textInput;
-    setUserText(msg);
-    setTextInput('');
-    handleStreamResponse(msg);
-  };
-
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between items-center p-6 select-none font-sans">
-      <header className="w-full max-w-lg flex items-center justify-between py-4 border-b border-slate-800">
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-6 h-6 text-emerald-400" />
-          <h1 className="text-2xl font-bold">TalkApp</h1>
-        </div>
-        <button
-          onClick={() => {
-            unlockAudioContext();
-            const nextState = !isHandsFree;
-            setIsHandsFree(nextState);
-            if (nextState && !isRecording && !isSpeaking && !isLoading) startRecording();
-            else if (!nextState && isRecording) stopRecording();
-          }}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all cursor-pointer ${
-            isHandsFree ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300' : 'bg-slate-900 border-slate-800 text-slate-400'
-          }`}
-        >
-          <Radio className={`w-3.5 h-3.5 ${isHandsFree ? 'animate-pulse text-emerald-400' : ''}`} />
-          <span>{isHandsFree ? 'Tryb ciągły: WŁ' : 'Tryb ciągły: WYŁ'}</span>
-        </button>
-      </header>
-
-      <section className="w-full max-w-lg my-auto py-4 space-y-4">
-        {userText && (
-          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 shadow-md flex flex-col gap-1.5 animate-fade-in">
-            <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold uppercase tracking-wider">
-              <User className="w-4 h-4" />
-              <span>Ty powiedziałaś / powiedziałeś:</span>
-            </div>
-            <p className="text-sm text-slate-200 leading-relaxed font-medium pl-6">
-              "{userText}"
+    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between items-center p-6 select-none font-sans relative overflow-hidden">
+      
+      {/* 4. Nakładka startowa do odblokowania Audio (nie ukrywa DOM-u awatara!) */}
+      {!isStarted && (
+        <div className="absolute inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+          <div className="max-w-lg space-y-8 bg-slate-900 border border-slate-800 p-10 rounded-3xl shadow-2xl">
+            <h1 className="text-4xl font-extrabold text-emerald-400">Asystent dla Babci</h1>
+            <p className="text-2xl text-slate-300 leading-relaxed">
+              Kliknij poniższy przycisk, aby włączyć automatyczną rozmowę.
             </p>
+            <button
+              onClick={() => {
+                setIsStarted(true);
+                unlockAudioContext();
+                startRecording();
+              }}
+              className="w-full py-8 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-3xl rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-4 cursor-pointer"
+            >
+              <Play className="w-10 h-10 fill-current" />
+              <span>ROZPOCZNIJ</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Widok Główny */}
+      <section className="w-full max-w-3xl my-auto space-y-6">
+        
+        {userText && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg">
+            <span className="text-emerald-400 text-sm font-bold uppercase tracking-wider block mb-1">
+              Babcia powiedziała:
+            </span>
+            <p className="text-2xl text-slate-100 font-medium">"{userText}"</p>
           </div>
         )}
 
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
-          <div className="w-full h-80 bg-slate-950 rounded-2xl overflow-hidden relative border border-slate-800/60 shadow-inner">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-6">
+          
+          {/* Kontener Awatara (zawsze wyrenderowany w DOM) */}
+          <div className="w-full h-96 bg-slate-950 rounded-2xl overflow-hidden relative border border-slate-800/80 shadow-inner">
             <div ref={avatarContainerRef} className="w-full h-full" />
+
+            <div className="absolute top-4 left-4 bg-slate-900/90 border border-slate-700 px-4 py-2 rounded-full flex items-center gap-3">
+              {isRecording ? (
+                <>
+                  <span className="w-3.5 h-3.5 bg-rose-500 rounded-full animate-ping" />
+                  <span className="text-rose-400 font-bold">SŁUCHAM...</span>
+                </>
+              ) : isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+                  <span className="text-amber-400 font-bold">MYŚLĘ...</span>
+                </>
+              ) : isSpeaking ? (
+                <>
+                  <Volume2 className="w-4 h-4 text-emerald-400 animate-pulse" />
+                  <span className="text-emerald-400 font-bold">MÓWIĘ...</span>
+                </>
+              ) : (
+                <span className="text-slate-400 font-medium">{status}</span>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center justify-center gap-2 text-slate-400 text-sm font-medium pt-2 border-t border-slate-800/80">
-            <Volume2 className={`w-5 h-5 ${isSpeaking ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`} />
-            <span>Marek:</span>
+          {/* Duży tekst odpowiedzi dla seniora */}
+          <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 min-h-[90px] flex items-center justify-center">
+            <p className="text-2xl font-medium leading-relaxed text-slate-100 text-center">
+              {assistantText}
+            </p>
           </div>
-
-          <p className="text-lg leading-relaxed text-slate-100 min-h-[60px] text-center italic">
-            {assistantText}
-          </p>
         </div>
       </section>
 
-      <footer className="w-full max-w-lg flex flex-col items-center pb-6 gap-4">
-        <form onSubmit={handleFormSubmit} className="w-full flex gap-2">
-          <input
-            type="text"
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            disabled={isLoading || isRecording}
-            placeholder="Wpisz wiadomość..."
-            className="flex-1 bg-slate-900 border border-slate-800 rounded-full px-5 py-3 text-sm focus:outline-none focus:border-emerald-500 text-white disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={isLoading || isRecording}
-            className="bg-emerald-600 hover:bg-emerald-500 p-3 rounded-full text-white cursor-pointer disabled:opacity-50"
-          >
-            <Send className="w-5 h-5" />
-          </button>
-        </form>
-
-        <button
-          onClick={isRecording ? stopRecording : startRecording}
-          disabled={isLoading}
-          className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300 shadow-xl cursor-pointer ${
-            isRecording ? 'bg-rose-600 ring-8 ring-rose-500/30 scale-105 animate-pulse' : 'bg-emerald-500 hover:bg-emerald-400 active:scale-95'
-          } ${isLoading ? 'opacity-60 cursor-not-allowed' : ''}`}
-        >
-          {isLoading ? (
-            <Loader2 className="w-10 h-10 text-white animate-spin" />
-          ) : isRecording ? (
-            <Square className="w-8 h-8 text-white fill-white" />
-          ) : (
-            <Mic className="w-10 h-10 text-white" />
-          )}
-        </button>
-
-        <p className="text-sm font-medium text-slate-400">{status}</p>
+      {/* Dolny pasek stanu mikrofonu */}
+      <footer className="w-full max-w-md flex flex-col items-center pb-4">
+        <div className={`p-5 rounded-full transition-all duration-300 ${
+          isRecording ? 'bg-rose-500/20 border-2 border-rose-500 scale-110' : 'bg-slate-900 border border-slate-800'
+        }`}>
+          <Mic className={`w-10 h-10 ${isRecording ? 'text-rose-500 animate-pulse' : 'text-slate-500'}`} />
+        </div>
+        <p className="text-lg font-semibold text-slate-400 mt-2">{status}</p>
       </footer>
     </main>
   );
