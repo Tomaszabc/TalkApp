@@ -50,14 +50,16 @@ def clean_text_for_speech(text: str) -> str:
     text = re.sub(r'[*_~#`>\-]', '', text)
     return text.strip()
 
-def remove_polish_diactritics(text: str) -> str:
-    """Zamienia polskie znaki na litery łacińskie (np. ą -> a, ł -> l)."""
-    nfkd_form = unicodedata.normalize('NFKD', text)
-    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+class TTSRequest(BaseModel):
+    text: str
+
+def remove_diacritics(text: str) -> str:
+    """Usuwa znaki diakrytyczne (np. ą -> a, ł -> l) dla lepszego przetwarzania."""
+    nfkd = unicodedata.normalize('NFKD', text)
+    return "".join([c for c in nfkd if not unicodedata.combining(c)])
 
 
-
-# 1. Transkrypcja nagrania audio z Gemini
+# 1. Transkrypcja nagrania audio z Gemini (ze ścisłym wskazaniem języka polskiego)
 @app.post("/api/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
     try:
@@ -66,8 +68,13 @@ async def transcribe_audio(file: UploadFile = File(...)):
             model=MODEL_NAME,
             contents=[
                 types.Part.from_bytes(data=audio_bytes, mime_type="audio/webm"),
-                "Przepisz dosłownie treść tego nagrania na tekst w języku polskim. Zwróć wyłącznie sam rozpoznany tekst, bez żadnych dodatkowych uwag."
-            ]
+                "Dokładnie przeanalizuj ten plik audio. Mówca posługuje się językiem polskim. "
+                "Przepisz wypowiedź dosłownie w języku polskim. "
+                "Zwróć wyłącznie rozpoznany tekst, bez komentarzy i wyjaśnień."
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction="Jesteś ekspertem ds. transkrypcji mowy w języku polskim. Zawsze przepisujesz mowę w języku polskim."
+            )
         )
         return {"text": response.text.strip() if response.text else ""}
     except Exception as e:
@@ -95,81 +102,71 @@ async def chat_stream(payload: ChatPayload):
         media_type="text/plain; charset=utf-8"
     )
 
-# 3. Synteza mowy (Darmowy kobiecy głos neuronowy: Zofia)
+# 3. Synteza mowy - pobieranie słów bezpośrednio ze zdarzeń WordBoundary
 @app.post("/api/tts")
-async def text_to_speech(payload: TTSPayload):
+async def text_to_speech(req: TTSRequest):
+    clean_text = clean_text_for_speech(req.text)
+    if not clean_text:
+        return {"audio": "", "words": [], "wtimes": [], "wdurations": []}
+
+    voice = "pl-PL-MarekNeural"
+    
+    # Tworzymy obiekt komunikacji
+    communicate = edge_tts.Communicate(clean_text, voice)
+    
+    audio_bytes = bytearray()
+    words = []
+    wtimes = []
+    wdurations = []
+
     try:
-        cleaned_text = clean_text_for_speech(payload.text)
-
-        if not cleaned_text:
-            raise HTTPException(
-                status_code=400,
-                detail="Brak tekstu do odczytania"
-            )
-
-        communicate = edge_tts.Communicate(
-            text=cleaned_text,
-            voice="pl-PL-MarekNeural",
-            rate="-4%"
-        )
-
-        audio_data = bytearray()
-
-        words = []
-        wtimes = []
-        wdurations = []
-
+        # Pętla stream_async() dostarcza obiekty zdarzeń WordBoundary
         async for chunk in communicate.stream():
-
             if chunk["type"] == "audio":
-                audio_data.extend(chunk["data"])
-
+                audio_bytes.extend(chunk["data"])
             elif chunk["type"] == "WordBoundary":
-
-                word = chunk.get("text", "")
-                offset = chunk.get("offset", 0)
-                duration = chunk.get("duration", 0)
-
-                # Edge TTS podaje czas w jednostkach 100 ns.
-                # TalkingHead oczekuje milisekund.
-                start_ms = offset / 10000
-                duration_ms = duration / 10000
-
-                words.append(word)
-                wtimes.append(start_ms)
-                wdurations.append(duration_ms)
-
-        if not audio_data:
-            raise HTTPException(
-                status_code=500,
-                detail="Edge TTS nie zwrócił audio"
-            )
-
-        print("[TTS WORDS]", words)
-        print("[TTS TIMES]", wtimes)
-        print("[TTS DURATIONS]", wdurations)
-
-        audio_base64 = base64.b64encode(
-            bytes(audio_data)
-        ).decode("utf-8")
-        # Przekształć listę słów, aby nie zawierała polskich znaków ani interpunkcji
-        cleaned_words = [remove_polish_diactritics(w.strip(".,!?")) for w in words]
-        return {
-            "audio": audio_base64,
-            "words": cleaned_words, # Wyczyszczona lista słów dla modułu lipsync
-            "wtimes": wtimes,
-            "wdurations": wdurations
-        }
-
-    except HTTPException:
-        raise
+                # edge-tts zwraca offset i duration w jednostkach 100 ns (1 ms = 10 000 tics)
+                offset_ms = int(chunk["offset"] / 10000)
+                duration_ms = int(chunk["duration"] / 10000)
+                
+                # Wyciągnięcie słowa z obiektu zdarzenia
+                raw_text = chunk["text"]
+                clean_word = remove_diacritics(raw_text.strip(".,!?\"'()"))
+                
+                if clean_word:
+                    words.append(clean_word)
+                    wtimes.append(offset_ms)
+                    wdurations.append(duration_ms)
 
     except Exception as e:
-        print(f"[BŁĄD TTS]: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        print(f"[BŁĄD EDGE-TTS]: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Jeśli z jakiegoś powodu edge-tts nadal nie wygenerował WordBoundary dla danego tekstu (fallback)
+    if not words and clean_text:
+        print("⚠️ WARN: Brak zdarzeń WordBoundary z Edge-TTS. Uruchamiam estymację czasową.")
+        raw_words = [remove_diacritics(w.strip(".,!?\"'()")) for w in clean_text.split() if w.strip()]
+        
+        # Przybliżony czas trwania audio na podstawie rozmiaru bajtów MP3 (ok. 128 kbps)
+        estimated_total_ms = int((len(audio_bytes) * 8) / 128)
+        avg_duration = max(100, int(estimated_total_ms / max(1, len(raw_words))))
+        
+        current_time = 0
+        for w in raw_words:
+            if w:
+                words.append(w)
+                wtimes.append(current_time)
+                wdurations.append(avg_duration)
+                current_time += avg_duration
+
+    audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+    
+    return {
+        "audio": audio_base64,
+        "words": words,
+        "wtimes": wtimes,
+        "wdurations": wdurations
+    }
 
 if __name__ == "__main__":
     import uvicorn

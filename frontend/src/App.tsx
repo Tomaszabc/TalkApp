@@ -166,7 +166,7 @@ export default function App() {
           audio: audioBuffer,
           words: data.words || [],
           wtimes: data.wtimes || [],
-          wdurations: data.wdurations || []
+          wdurations: (data.wdurations || []).map((d: number) => d * 2)
         },
         {
           lipsyncLang: 'fi'
