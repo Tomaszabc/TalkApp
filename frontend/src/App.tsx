@@ -83,66 +83,53 @@ export default function App() {
 
   useEffect(() => cleanupMicContext, []);
 
-  // 2. Odwarzanie głosu AI
-  const playBackendTTS = async (text: string) => {
-    if (!text.trim()) {
-      restartListeningLater();
-      return;
-    }
+  // 2. Funkcja pomocnicza do odtwarzania pojedynczego fragmentu zdania w TalkingHead
+  const playAudioChunk = (data: { text: string; audio: string; words: string[]; wtimes: number[]; wdurations: number[] }): Promise<void> => {
+    return new Promise(async (resolve) => {
+      try {
+        if (!data.audio || !headRef.current) {
+          resolve();
+          return;
+        }
 
-    try {
-      setStatus('Marek przygotowuje odpowiedź...');
+        setAssistantText((prev) => (prev ? `${prev} ${data.text}` : data.text));
 
-      const response = await fetch('http://127.0.0.1:8000/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
+        const binaryString = window.atob(data.audio);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
 
-      if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
-      const data = await response.json();
+        const audioCtx = headRef.current.audioCtx;
+        if (audioCtx && audioCtx.state === 'suspended') {
+          await audioCtx.resume();
+        }
 
-      if (!headRef.current) throw new Error('TalkingHead niedostępny');
+        const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
 
-      const binaryString = window.atob(data.audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+        setIsSpeaking(true);
+        setStatus('Marek odpowiada...');
+
+        const SLOW_FACTOR = 1.0;
+
+        headRef.current.speakAudio(
+          {
+            audio: audioBuffer,
+            words: data.words || [],
+            wtimes: (data.wtimes || []).map((t: number) => t * SLOW_FACTOR),
+            wdurations: (data.wdurations || []).map((d: number) => d * SLOW_FACTOR)
+          },
+          { lipsyncLang: 'fi' }
+        );
+
+        headRef.current.speakMarker(() => {
+          resolve();
+        });
+      } catch (err) {
+        console.error('[PLAY CHUNK ERROR]:', err);
+        resolve();
       }
-
-      const audioCtx = headRef.current.audioCtx;
-      if (audioCtx && audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
-
-      const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
-
-      setStatus('Marek odpowiada...');
-      setIsSpeaking(true);
-
-      const SLOW_FACTOR = 2.0;
-
-      headRef.current.speakAudio(
-        {
-          audio: audioBuffer,
-          words: data.words || [],
-          wtimes: (data.wtimes || []).map((t: number) => t * SLOW_FACTOR),
-          wdurations: (data.wdurations || []).map((d: number) => d * SLOW_FACTOR)
-        },
-        { lipsyncLang: 'fi' }
-      );
-
-      // Dopiero gdy Marek SKOŃCZY mówić -> włączamy mikrofon
-      headRef.current.speakMarker(() => {
-        setIsSpeaking(false);
-        restartListeningLater(400);
-      });
-
-    } catch (err: any) {
-      console.error('[TTS ERROR]:', err);
-      setIsSpeaking(false);
-      restartListeningLater(1500);
-    }
+    });
   };
 
   // 3. Nasłuch mikrofonu (Sekwencyjny)
@@ -261,37 +248,63 @@ export default function App() {
     }
   };
 
+  // 4. Odbieranie odpowiedzi ze strumienia i płynne odtwarzanie zdań
   const handleStreamResponse = async (userPrompt: string) => {
     try {
       setIsLoading(false);
       setStatus('Generuję odpowiedź...');
       setAssistantText('');
 
-      const response = await fetch('http://127.0.0.1:8000/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: 'babcia', message: userPrompt }),
+      const response = await fetch("http://127.0.0.1:8000/api/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userPrompt }), // Poprawiono: przekazujemy userPrompt
       });
 
-      if (!response.ok) throw new Error(`Błąd HTTP: ${response.status}`);
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let fullText = '';
+      if (!response.ok) throw new Error(`Błąd HTTP ${response.status}`);
 
-      if (reader) {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          fullText += chunk;
-          setAssistantText((prev) => prev + chunk);
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let partialLine = "";
+
+      while (reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        partialLine += decoder.decode(value, { stream: true });
+        const lines = partialLine.split("\n");
+        partialLine = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const data = JSON.parse(line);
+              // Odtwarzamy zdanie po zdaniu i czekamy na zakończenie każdego z nich
+              await playAudioChunk(data);
+            } catch (jsonErr) {
+              console.error("[JSON PARSE ERROR]:", jsonErr);
+            }
+          }
         }
       }
 
-      await playBackendTTS(fullText);
+      // Ostatni pozostały fragment
+      if (partialLine.trim()) {
+        try {
+          const data = JSON.parse(partialLine);
+          await playAudioChunk(data);
+        } catch (jsonErr) {
+          console.error("[JSON PARSE ERROR]:", jsonErr);
+        }
+      }
+
+      setIsSpeaking(false);
+      restartListeningLater(400);
 
     } catch (err: any) {
+      console.error("[STREAM ERROR]:", err);
       setAssistantText('Wystąpił problem z połączeniem.');
+      setIsSpeaking(false);
       setIsLoading(false);
       restartListeningLater(3000);
     }
